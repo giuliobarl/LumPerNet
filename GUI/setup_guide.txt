@@ -1,0 +1,52 @@
+README
+
+To run the PL/EL/JV measurement application, you can either click on the
+'EL/PL ONE' icon below, or you can open the terminal
+and enter the following command:
+
+python3 /home/chose/Documenti/Scientific_Camera_Interfaces/SDK/Python_Toolkit/EL_PL_one.py
+
+This is preferable, as the terminal itself will act as a debugging console,
+printing the progress of the tests.
+
+Before opening the application, PLEASE CAREFULLY READ THE README TEXT REPORTED
+HERE:
+
+
+This is the user guide to this GUI, developed to have easy access to the PL/EL
+measurement bench.
+Before running the tests, make sure that the camera USB cable is plugged in,
+that the power source is on at 24 V and the current knob is turned all the way
+to the max.
+
+As of now, the system is only capable of performing PL measurements.
+In order to do so, go through the Tabs in the Box below, click on the buttons,
+and enter the desired values.
+LIGHTS: Since the EL and JV measurements cannot be performed, please insert 0
+in the 'LED's off time' and 'White LED's soaking time'.
+CAMERA: Enter the exposure time in microseconds (e.g. entering 200000 will
+result in an exposure time of 0.2 seconds) and the waiting time, if you wish to
+prolongue the light soaking. Please notice: if you enter 0 as the exposure time,
+ the program will still run, but no image will be captured.
+CELL: Enter the reference of the cell. The acquired image will be saved as
+'<reference>.tiff' in the folder '/home/chose/Documenti/Codes/Test_PL'.
+
+Now the program is ready. Before running, enter the 'summary' command in the
+command line at the bottom and press enter. A textbox with the stored values
+pops up, check them.
+Once you have checked that the values are correct and not missing (i.e., no
+'None' values), enter the 'run' command and press enter.
+
+If the program returns an error, and the LEDs remain off, please CLOSE the
+application and run the following command in the terminal:
+
+python3 /home/chose/Documenti/Codes/shutdown.py
+
+For more information, or if you have doubts, ask Giulio Barletta
+<giulio.barletta@polito.it>
+or Simon Ternes
+<ternes@ing.uniroma2.it>.
+
+
+This text is also present in the GUI, in the central textbox. ALWAYS refer to
+it, or contact Giulio or Simon.
