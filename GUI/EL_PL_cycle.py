@@ -1,18 +1,14 @@
 import datetime
-import glob
 import os
 import sys
 import threading
 import time
-import tkinter
-import tkinter.messagebox
 from pathlib import Path
-from tkinter import END, Listbox, Scrollbar, Text
+from tkinter import END, Scrollbar, Text
 
 import customtkinter
 import numpy as np
-import tifffile
-from PIL import Image, ImageTk
+from PIL import Image
 from RPi import GPIO
 from tqdm import tqdm
 
@@ -66,9 +62,7 @@ class App(customtkinter.CTk):
         self.exposure_time: int = 0
         self.batch_name: str = "batch"
         self.res_name: str = "giulio"
-        self.cycle_time_100: int = 180
-        self.cycle_time_200: int = 300
-        self.cycle_time_500: int = 600
+        self.sampling_strategy: str = "linear"
         self.max_iter: int = 500
 
         # camera configuration
@@ -237,27 +231,13 @@ class App(customtkinter.CTk):
         )
         self.cycle_settings_label.grid(row=1, column=0, padx=20, pady=(5, 0))
 
-        # initialize the cycle time variables
-        self.cycle_100_input_button = customtkinter.CTkButton(
+        # Initialize the acquisition strategy variable
+        self.strategy_input_button = customtkinter.CTkButton(
             self.tabview.tab("Cycle"),
-            text="Cycle duration (iters. 0-100) (s)",
-            command=self.open_cycle_100_dialog_event,
+            text="Acquisition strategy",
+            command=self.open_strategy_dialog_event,
         )
-        self.cycle_100_input_button.grid(row=2, column=0, padx=20, pady=(10, 10))
-
-        self.cycle_200_input_button = customtkinter.CTkButton(
-            self.tabview.tab("Cycle"),
-            text="Cycle duration (iters. 101-200) (s)",
-            command=self.open_cycle_200_dialog_event,
-        )
-        self.cycle_200_input_button.grid(row=3, column=0, padx=20, pady=(10, 10))
-
-        self.cycle_500_input_button = customtkinter.CTkButton(
-            self.tabview.tab("Cycle"),
-            text="Cycle duration (iters. 201-500) (s)",
-            command=self.open_cycle_500_dialog_event,
-        )
-        self.cycle_500_input_button.grid(row=4, column=0, padx=20, pady=(10, 10))
+        self.strategy_input_button.grid(row=2, column=0, padx=20, pady=(10, 10))
 
         # batch settings
         self.batch_settings_label = customtkinter.CTkLabel(
@@ -333,38 +313,46 @@ class App(customtkinter.CTk):
         )
         self.textbox.insert(
             "9.0",
-            "- CYCLE: Enter the desired time interval between consecutive measurements when running in cyclic mode. Supports up to 3 different intervals for iterations (0-100), (101-200), (201-500). \n",
+            "- CYCLE: Enter the desired sampling strategy. Supports either a 'linear' or a 'decreasing' strategy: \n",
         )
         self.textbox.insert(
             "10.0",
-            "- BATCH: Enter the reference of the cell/batch, the name of the researcher performing the measurements, and the desired time interval between consecutive when measurements when running in cyclic mode. The acquired image(s) will be saved as '<reference>.tiff' in the folder '/home/chose/Documenti/<researcher>/<date>/PL'. \n",
+            "   - 'linear': performs one measurement at each iteration; \n",
+        )
+        self.textbox.insert(
+            "11.0",
+            "   - 'decreasing': performs measurements more frequently in the early iterations, less in later ones. \n",
         )
         self.textbox.insert(
             "12.0",
+            "- BATCH: Enter the reference of the cell/batch, the name of the researcher performing the measurements, and the desired time interval between consecutive when measurements when running in cyclic mode. The acquired image(s) will be saved as '<reference>.tiff' in the folder '/home/chose/Documenti/<researcher>/<date>/PL'. \n\n",
+        )
+        self.textbox.insert(
+            "14.0",
             "The command line at the bottom of the GUI allows running the measurement programs. It accepts 4 commands: \n",
         )
         self.textbox.insert(
-            "13.0",
+            "15.0",
             "- summary: shows the values stored by the program, always check them before running. \n",
         )
         self.textbox.insert(
-            "14.0", "- run: performs one single measurement and acquires an image. \n"
+            "16.0", "- run: performs one single measurement and acquires an image. \n"
         )
         self.textbox.insert(
-            "15.0",
-            "- cycle: runs in cyclic mode, acquiring one image per iteration, until stopped. The time between iterations is user-defined. \n",
-        )
-        self.textbox.insert(
-            "16.0",
-            "- stop: stops the running cycles. Always use this and only this command to stop cycles. \n",
+            "17.0",
+            "- cycle: runs in cyclic mode, acquiring one image per iteration, until stopped. The sampling strategy is user-defined. \n",
         )
         self.textbox.insert(
             "18.0",
+            "- stop: stops the running cycles. Always use this and only this command to stop cycles. \n\n",
+        )
+        self.textbox.insert(
+            "20.0",
             "If the program returns an error, and the LEDs remain ON, please CLOSE the application and read the README file on the desktop. You will find what to do in lines 51-56. \n \n",
         )
 
         self.textbox.insert(
-            "20.0",
+            "22.0",
             "For more information, or if you have doubts, ask Giulio Barletta \n<giulio.barletta@polito.it> \nor Simon Ternes \n<ternes@ing.uniroma2.it>.",
         )
         self.textbox.configure(state="disabled")
@@ -456,47 +444,21 @@ class App(customtkinter.CTk):
 
     # cycle settings functions
 
-    def open_cycle_100_dialog_event(self):
+    def open_strategy_dialog_event(self):
         dialog_name = customtkinter.CTkInputDialog(
-            text="Type in the time between successive measurements (iters. 0-100) (s) (prev. "
-            + str(self.cycle_time_100)
+            text="Type in the sampling strategy to adopt (can be one of ['linear', 'decreasing']) (prev. "
+            + str(self.sampling_strategy)
             + "):",
             title="Cycle Settings",
         )
         # Get the input from the dialog
-        cycle_time = dialog_name.get_input()
-        print("Time between measurements (s): " + cycle_time)
+        acq_strategy = dialog_name.get_input()
+        print("Time between measurements (s): " + acq_strategy)
 
         # Store the input in the instance variable
-        self.cycle_time_100 = cycle_time
-
-    def open_cycle_200_dialog_event(self):
-        dialog_name = customtkinter.CTkInputDialog(
-            text="Type in the time between successive measurements (iters. 101-200) (s) (prev. "
-            + str(self.cycle_time_200)
-            + "):",
-            title="Cycle Settings",
-        )
-        # Get the input from the dialog
-        cycle_time = dialog_name.get_input()
-        print("Time between measurements (s): " + cycle_time)
-
-        # Store the input in the instance variable
-        self.cycle_time_200 = cycle_time
-
-    def open_cycle_500_dialog_event(self):
-        dialog_name = customtkinter.CTkInputDialog(
-            text="Type in the time between successive measurements (iters. 201-500) (s) (prev. "
-            + str(self.cycle_time_500)
-            + "):",
-            title="Cycle Settings",
-        )
-        # Get the input from the dialog
-        cycle_time = dialog_name.get_input()
-        print("Time between measurements (s): " + cycle_time)
-
-        # Store the input in the instance variable
-        self.cycle_time_500 = cycle_time
+        self.sampling_strategy = acq_strategy
+        if self.sampling_strategy == "decreasing":
+            self.generate_schedule()
 
     # command line function
 
@@ -559,9 +521,7 @@ class App(customtkinter.CTk):
             + f"- Camera exposure time: {self.exposure_time} us\n"
             + f"- Batch name: {self.batch_name} \n"
             + f"- Researcher's name: {self.res_name} \n"
-            + f"- Time between measurements (0-100) (s): {self.cycle_time_100} \n"
-            + f"- Time between measurements (101-200) (s): {self.cycle_time_200} \n"
-            + f"- Time between measurements (201-500) (s): {self.cycle_time_500} \n",
+            + f"- Acquisition strategy: {self.sampling_strategy} \n",
             justify="left",
         )
         summary_label.grid(row=0, column=0, padx=20, pady=(20, 10))
@@ -583,7 +543,7 @@ class App(customtkinter.CTk):
         ) as log_file:
             log_file.write(log_entry)
 
-    def process_run(self):
+    def process_run(self, acquire: bool = True):
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
 
@@ -596,132 +556,135 @@ class App(customtkinter.CTk):
         GPIO.output(GPIO_PIN_WHITE, GPIO.LOW)
 
         try:
-            # start PL bias
+            # ==== BLUE LED (PL) ====
             if int(self.PL_time) > 0:
                 GPIO.output(GPIO_PIN_BLUE, GPIO.HIGH)
-                print("\n Blue light soaking...")
-                for i in tqdm(range(int(self.PL_time)), desc="Blue light soaking..."):
+                print(f"\n[{self.cycle_counter}] Blue light soaking...")
+                for _ in tqdm(range(int(self.PL_time)), desc="Blue light soaking..."):
                     time.sleep(1)
 
-                self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
-                output_dir = (
-                    f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/PL/"
-                )
-                os.makedirs(output_dir, exist_ok=True)
-                self.folder_path = output_dir
-
-                if self.cycle_running:
-                    unique_batch_name = f"{self.batch_name}_{self.cycle_counter}"
-                else:
-                    unique_batch_name = f"{self.batch_name}"
-
                 # PL image acquisition
-                if self.USE_CAMERA is True and int(self.exposure_time) != 0:
+                if acquire and self.USE_CAMERA and int(self.exposure_time) != 0:
                     try:
-                        acquisition_PL(
-                            int(self.exposure_time), unique_batch_name, output_dir
+                        self.current_date = (
+                            datetime.datetime.now().date().strftime("%Y-%m-%d")
+                        )
+                        output_dir = f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/PL/"
+                        os.makedirs(output_dir, exist_ok=True)
+                        self.PL_path = output_dir
+
+                        batch_name = (
+                            f"{self.batch_name}_{self.cycle_counter}"
+                            if self.cycle_running
+                            else self.batch_name
+                        )
+
+                        acquisition_PL(int(self.exposure_time), batch_name, output_dir)
+                        self.log_metadata(image_type="PL")
+
+                    except Exception as e:
+                        print(
+                            f"\n[{self.cycle_counter}] Error during PL acquisition: {e}"
+                        )
+
+                # stop PL bias
+                GPIO.output(GPIO_PIN_BLUE, GPIO.LOW)
+                print(f"\n[{self.cycle_counter}] Blue LEDs OFF.")
+
+            # ==== EL Bias (LEDs OFF) ====
+            if int(self.EL_time) > 0:
+                print(f"\n[{self.cycle_counter}] EL soaking (LEDs OFF)...")
+                for i in tqdm(
+                    range(int(self.EL_time)), desc="Applying electric bias..."
+                ):
+                    time.sleep(1)
+                """
+                # EL image acquisition
+                if self.should_acquire(self.cycle_counter) and self.USE_CAMERA and int(self.exposure_time) != 0:
+                    try:
+                        self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
+                        output_dir = (
+                            f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/EL/"
+                        )
+                        os.makedirs(output_dir, exist_ok=True)
+                        self.EL_path = output_dir
+
+                        batch_name = f"{self.batch_name}_{self.cycle_counter}" if self.cycle_running else self.batch_name
+
+                        acquisition_EL(
+                            int(self.exposure_time), batch_name, output_dir
                         )
                         self.log_metadata(image_type="PL")
 
                     except Exception as e:
-                        print(f"\n Error during PL acquisition: {e}")
-
-                # stop PL bias
-                GPIO.output(GPIO_PIN_BLUE, GPIO.LOW)
-                print("\n Blue LEDs are OFF.")
-
-            """
-            # start EL bias
-            if int(self.EL_time) > 0:
-                print("\n Applying electric bias...")
-                for i in tqdm(range(int(self.EL_time)), desc = "EL bias is ON."):
-                    time.sleep(1)
-
-                self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
-                output_dir = f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/EL/"
-                os.makedirs(output_dir, exist_ok=True)
-                self.folder_path = output_dir
-
-                if self.cycle_running:
-                    unique_batch_name = f"{self.batch_name}_{self.cycle_counter}"
-                    self.cycle_counter += 1
-                else:
-                    unique_batch_name = f"{self.batch_name}"
-
-
-                # PL image acquisition
-                if self.USE_CAMERA == True and int(self.exposure_time) != 0:
-                    try:
-                        acquisition_PL(int(self.exposure_time), unique_batch_name, output_dir)
-                        self.log_metadata(image_type="EL")
-
-                    except Exception as e:
-                        print(f"\n Error during PL acquisition: {e}")
-
+                        print(f"\n[{self.cycle_counter}] Error during EL acquisition: {e}")
+                """
                 # stop EL bias
-                print("\n EL bias is OFF.")
-            """
+                print(f"\n[{self.cycle_counter}] EL bias OFF.")
 
-            # White light soaking for IV curve
+            # ==== WHITE LED (JV) ====
             if int(self.JV_time) > 0:
                 GPIO.output(GPIO_PIN_WHITE, GPIO.HIGH)
-                print("\n White light soaking...")
+                print(f"\n[{self.cycle_counter}] White light soaking...")
                 for i in tqdm(range(int(self.JV_time)), desc="White light soaking...."):
                     time.sleep(1)
 
                 # stop white light soaking
                 GPIO.output(GPIO_PIN_WHITE, GPIO.LOW)
-                print("\n White LED is OFF.")
+                print(f"\n[{self.cycle_counter}] White LED OFF.")
 
         finally:
             GPIO.cleanup()
-            print("\n GPIO cleanup complete.")
+            print(f"\n[{self.cycle_counter}] GPIO cleanup complete.")
 
     def cycle_process(self):
         try:
             while self.cycle_running and self.cycle_counter < self.max_iter:
-                start_time = time.time()  # Record the cycle start time
+                # Decide if we should acquire based on strategy
+                acquire = False
+                if self.sampling_strategy == "linear":
+                    acquire = True
+                elif self.sampling_strategy == "decreasing":
+                    acquire = self.cycle_counter in self.decreasing_schedule
 
-                print(f"\n Starting measurement {self.cycle_counter}...")
-                self.process_run()
-
-                # Calculate time elapsed during process_run()
-                elapsed_time = time.time() - start_time
-                wait_time = self.get_cycle_time()
-                remaining_time = max(int(wait_time) - elapsed_time, 0)
+                print(
+                    f"\nStarting iteration {self.cycle_counter} (Acquire = {acquire})..."
+                )
+                self.process_run(acquire=acquire)
 
                 self.cycle_counter += 1
-                print(
-                    f"\n Cycle {self.cycle_counter} completed. Waiting {int(remaining_time)} second(s) before next run."
-                )
 
-                update_interval = 10
-                total_updates = int(remaining_time / update_interval)
-
-                for _ in tqdm(range(total_updates), desc="Time until next run"):
-                    if not self.cycle_running:
-                        print("\n Cycle stopped during wait period.")
-                        return
-                    time.sleep(update_interval)
-
-            if self.cycle_counter >= self.max_iter:
+            if self.cycle_counter < self.max_iter:
                 self.update_gui(
                     f"Cycle stopped: reached max iterations ({self.max_iter})."
                 )
+            else:
+                self.update_gui(f"Cycle stopped at iteration {self.cycle_counter}")
 
         finally:
             GPIO.cleanup()
             self.cycle_running = False
-            print("\n Cycle process exited.")
+            print("\nCycle process exited.")
 
-    def get_cycle_time(self):
-        """Determines the waiting time based on the iteration count"""
-        if self.cycle_counter <= 100:
-            return self.cycle_time_100
-        elif self.cycle_counter <= 200:
-            return self.cycle_time_200
-        else:
-            return self.cycle_time_500
+    def generate_schedule(self, max_iter: int = None):
+        if max_iter is None:
+            max_iter = self.max_iter
+
+        self.decreasing_schedule = set()
+        # Acquire more often early, then gradually spread out
+        step = 1
+        i = 0
+        while i <= max_iter:
+            self.decreasing_schedule.add(i)
+            if i < 50:
+                step = 1
+            elif i < 100:
+                step = 2
+            elif i < 200:
+                step = 5
+            else:
+                step = 10
+            i += step
 
     # Functions to handle image display
 
@@ -734,7 +697,7 @@ class App(customtkinter.CTk):
         if not tiff_files:
             return None
 
-        latest_file = max(tiff_files, key=lambda f: f.stat().st_ctime)
+        latest_file = max(tiff_files, key=lambda f: f.stat().st_birthtime)
         return latest_file
 
     def update_latest_image(self):
