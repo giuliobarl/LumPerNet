@@ -67,7 +67,8 @@ class App(customtkinter.CTk):
         self.PL_time: int = 10
         self.EL_time: int = 10
         self.EL_voltage: float = 1.4
-        self.exposure_time: int = 1000
+        self.exp_time: int = 1000
+        self.exp_time_sc: int = 1000
         self.active_channels: int = 3
         self.cell_area: float = 0.16
         self.batch_name: str = "batch"
@@ -233,6 +234,13 @@ class App(customtkinter.CTk):
         )
         self.exposure_input_button.grid(row=2, column=0, padx=20, pady=(10, 10))
 
+        self.sc_exposure_input_button = customtkinter.CTkButton(
+            self.tabview.tab("Camera"),
+            text="SC exposure time (ms)",
+            command=self.open_sc_exposure_dialog_event,
+        )
+        self.sc_exposure_input_button.grid(row=3, column=0, padx=20, pady=(10, 10))
+
         ###### CYCLE SETTINGS ######
         self.cycle_settings_label = customtkinter.CTkLabel(
             self.tabview.tab("Cycle"),
@@ -256,6 +264,14 @@ class App(customtkinter.CTk):
             command=self.open_strategy_dialog_event,
         )
         self.strategy_input_button.grid(row=3, column=0, padx=20, pady=(10, 10))
+
+        # Initialize the maximum iterarions variable
+        self.max_iter_input_button = customtkinter.CTkButton(
+            self.tabview.tab("Cycle"),
+            text="Maximum number of iterations",
+            command=self.open_max_iter_dialog_event,
+        )
+        self.max_iter_input_button.grid(row=4, column=0, padx=20, pady=(10, 10))
 
         ###### BATCH SETTINGS ######
         self.batch_settings_label = customtkinter.CTkLabel(
@@ -465,14 +481,26 @@ class App(customtkinter.CTk):
 
     def open_exposure_dialog_event(self):
         dialog_exposure = customtkinter.CTkInputDialog(
-            text="Type in the exposure time (ms):", title="Camera Settings"
+            text="Type in the exposure time for EL and PL_oc (ms):",
+            title="Camera Settings",
         )
         # Get the input from the dialog
         exposure = dialog_exposure.get_input()
         print(f"Exposure time: {exposure} ms")
 
         # Store the input in the instance variable
-        self.exposure_time = int(exposure)
+        self.exp_time = int(exposure)
+
+    def open_sc_exposure_dialog_event(self):
+        dialog_exposure = customtkinter.CTkInputDialog(
+            text="Type in the exposure time for PL_sc (ms):", title="Camera Settings"
+        )
+        # Get the input from the dialog
+        exposure = dialog_exposure.get_input()
+        print(f"SC exposure time: {exposure} ms")
+
+        # Store the input in the instance variable
+        self.exp_time_sc = int(exposure)
 
     ###### batch settings functions ######
 
@@ -560,6 +588,15 @@ class App(customtkinter.CTk):
         if self.sampling_strategy == "decreasing":
             self.generate_schedule()
 
+    def open_max_iter_dialog_event(self):
+        dialog_iter = customtkinter.CTkInputDialog(
+            text="Type in the maximum number of iterations for one cycle:",
+            title="Cycle Settings",
+        )
+        max_iter = dialog_iter.get_input()
+        print(f"Maximum number of iterations: {max_iter}")
+        self.max_iter = int(max_iter)
+
     # command line function
 
     def process_command(self, event):
@@ -622,7 +659,8 @@ class App(customtkinter.CTk):
             + f"- White LED's ON time: {str(self.JV_time)} s \n"
             + f"- EL biasing time: {str(self.EL_time)} s \n"
             + f"- Blue LEDs' ON time: {str(self.PL_time)} s \n"
-            + f"- Camera exposure time: {str(self.exposure_time)} ms \n"
+            + f"- Camera exposure time (OC): {str(self.exp_time)} ms \n"
+            + f"- Camera exposure time (SC): {str(self.exp_time_sc)} ms \n"
             + f"- EL Voltage: {str(self.EL_voltage)} V \n"
             + f"- Cell area: {str(self.cell_area)} cm2 \n"
             + f"- Batch name: {self.batch_name} \n"
@@ -640,9 +678,9 @@ class App(customtkinter.CTk):
 
         # Prepare metadata
         if image_type in ["PL", "pl"]:
-            log_entry = f"{self.current_time} - {image_type} Image: {self.res_name}, Cell {self.batch_name}, Soaking: {self.PL_time} s, Exposure: {self.exposure_time} ms \n"
+            log_entry = f"{self.current_time} - {image_type} Image: {self.res_name}, Cell {self.batch_name}, Soaking: {self.PL_time} s, Exposure (OC): {self.exp_time} ms, Exposure (SC): {self.exp_time_sc} ms \n"
         else:
-            log_entry = f"{self.current_time} - {image_type} Image: {self.res_name}, Cell {self.batch_name}, Biasing: {self.EL_time} s, Exposure: {self.exposure_time} ms \n"
+            log_entry = f"{self.current_time} - {image_type} Image: {self.res_name}, Cell {self.batch_name}, Biasing: {self.EL_time} s, Exposure: {self.exp_time} ms \n"
 
         with open(
             self.base_dir / self.res_name / self.current_date / log_filename, "a"
@@ -718,7 +756,7 @@ class App(customtkinter.CTk):
                 try:
                     run_EL(
                         self.EL_time,
-                        self.exposure_time,
+                        self.exp_time,
                         self.EL_path,
                         batch_name,
                         acquire,
@@ -750,7 +788,8 @@ class App(customtkinter.CTk):
                         self.api,
                         self.active_channels,
                         self.PL_time,
-                        self.exposure_time,
+                        self.exp_time,
+                        self.exp_time_sc,
                         self.PL_path,
                         batch_name,
                         acquire,

@@ -70,6 +70,7 @@ def run_PL(
     num_channels,
     PL_time,
     exposure_time,
+    exposure_time_sc,
     output_dir,
     batch_name,
     acquire,
@@ -97,15 +98,15 @@ def run_PL(
         switch_tracking_short(api, ch)
 
     GPIO.output(GPIO_PIN_BLUE, GPIO.HIGH)
-    for _ in tqdm(range(int(PL_time)), desc="Blue light soaking (SC)..."):
+    for _ in tqdm(range(10), desc="Blue light soaking (SC)..."):
         time.sleep(1)
 
     # PL image acquisition
-    if acquire and USE_CAMERA and int(exposure_time) != 0:
+    if acquire and USE_CAMERA and int(exposure_time_sc) != 0:
         output_dir = output_dir + "_sc"
         try:
             os.makedirs(output_dir, exist_ok=True)
-            acquisition_PL(int(exposure_time) * 2, batch_name, output_dir)
+            acquisition_PL(int(exposure_time_sc), batch_name, output_dir)
 
         except Exception as e:
             print(f"\n[Error during PL_sc acquisition: {e}")
