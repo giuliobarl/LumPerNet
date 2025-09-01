@@ -340,9 +340,9 @@ class App(customtkinter.CTk):
         self.textbox.insert("5.0", "- the camera USB cable is plugged in, \n")
         self.textbox.insert(
             "6.0",
-            "- the power source is on at 24—26 V and the current knob is turned all the way to the max, \n",
+            "- the power source is on at 24—26 V and the current knob is turned all the way to the max (during operation, the current should be around 1.8 A), \n",
         )
-        self.textbot.insert(
+        self.textbox.insert(
             "7.0",
             "- the Arkeo PC is ON, connected to the network (IP address should be 192.168.0.216), and `Arkeo Multichannel` is running. \n\n",
         )
@@ -407,7 +407,7 @@ class App(customtkinter.CTk):
         )
         self.textbox.insert(
             "26.0",
-            "If the program returns an error, and the LEDs remain ON, please CLOSE the application and read the README file on the desktop. You will find what to do in lines 51-56. \n \n",
+            "If the program returns an error, and the LEDs remain ON, please CLOSE the application and read the README file on the desktop. You will find what to do in lines 41-45. \n \n",
         )
         self.textbox.insert(
             "28.0",
@@ -704,9 +704,8 @@ class App(customtkinter.CTk):
             if int(self.EL_time) > 0:
                 self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
                 output_dir = (
-                    f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/EL/"
+                    f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/EL"
                 )
-                os.makedirs(output_dir, exist_ok=True)
                 self.EL_path = output_dir
 
                 batch_name = (
@@ -735,9 +734,8 @@ class App(customtkinter.CTk):
             if int(self.PL_time) > 0:
                 self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
                 output_dir = (
-                    f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/PL/"
+                    f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/PL"
                 )
-                os.makedirs(output_dir, exist_ok=True)
                 self.PL_path = output_dir
 
                 batch_name = (

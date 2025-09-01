@@ -24,6 +24,7 @@ TAG_EXPOSURE = 32769
 
 
 def acquisition_PL(exposure_time, frames_counted, output_dir):
+    exposure_time = exposure_time * 1000
     OUTPUT_FOLDER = output_dir
     with TLCameraSDK() as sdk:
         cameras = sdk.discover_available_cameras()
@@ -84,7 +85,8 @@ def acquisition_PL(exposure_time, frames_counted, output_dir):
             camera.dispose()
 
 
-def acquisition_EL(exposure_time, frames_counted, output_dir):
+def acquisition_EL(exposure_time, batch_name, output_dir):
+    exposure_time = exposure_time * 1000
     OUTPUT_FOLDER = output_dir
     with TLCameraSDK() as sdk:
         cameras = sdk.discover_available_cameras()
@@ -115,16 +117,16 @@ def acquisition_EL(exposure_time, frames_counted, output_dir):
                     "Timeout was reached while polling for a frame, program will now exit"
                 )
 
-            print(f"Acquired frame {frames_counted}")
+            print(f"Acquired frame {batch_name}")
 
             image_data = frame.image_buffer
 
             # delete image if it exists
-            if os.path.exists(OUTPUT_FOLDER + os.sep + str(frames_counted) + ".tiff"):
-                os.remove(OUTPUT_FOLDER + os.sep + str(frames_counted) + ".tiff")
+            if os.path.exists(OUTPUT_FOLDER + os.sep + str(batch_name) + ".tiff"):
+                os.remove(OUTPUT_FOLDER + os.sep + str(batch_name) + ".tiff")
 
             with tifffile.TiffWriter(
-                OUTPUT_FOLDER + os.sep + str(frames_counted) + ".tiff", append=True
+                OUTPUT_FOLDER + os.sep + str(batch_name) + ".tiff", append=True
             ) as tiff:
                 tiff.write(
                     data=image_data,  # np.ushort image data array from the camera
