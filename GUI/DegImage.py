@@ -1,4 +1,5 @@
 import datetime
+import fcntl
 import json
 import os
 import sys
@@ -32,6 +33,15 @@ customtkinter.set_default_color_theme(
 )  # Themes: "blue" (standard), "green", "dark-blue"
 
 
+def _acquire_single_instance_lock(path="/tmp/degimage.lock"):
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd  # keep it open for process lifetime
+    except OSError:
+        raise SystemExit("Another instance is already running.")
+
+
 class RedirectText:
     def __init__(self, text_widget):
         self.text_widget = text_widget
@@ -47,6 +57,20 @@ class RedirectText:
         pass
 
 
+def gpio_safe_cleanup(pins_off=()):
+    try:
+        for pin in pins_off:
+            try:
+                GPIO.output(pin, GPIO.LOW)
+            except Exception:
+                pass
+    finally:
+        try:
+            GPIO.cleanup()
+        except Exception:
+            pass
+
+
 class App(customtkinter.CTk):
     def __init__(self):
         super().__init__()
@@ -58,23 +82,32 @@ class App(customtkinter.CTk):
         self.cycle_counter = 0
         self.cycle_running = False
         self.run_thread = None
-        self.api = MeasurementAPI("192.168.0.216")
+        self.api = MeasurementAPI("192.168.0.250")
         self.ensure_api_connection()
 
+        self.GPIO_PIN_BLUE = 2
+        self.GPIO_PIN_WHITE = 21
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
         # attribute initialization
-        self.iter_time: int = 300
-        self.JV_time: int = 40
+        self.iter_time: int = 180
+        self.JV_time: int = 30
         self.PL_time: int = 10
         self.EL_time: int = 10
         self.EL_voltage: float = 1.4
         self.exp_time: int = 1000
-        self.exp_time_sc: int = 1000
-        self.active_channels: int = 3
+        self.exp_time_sc: int = 2000
+        self.active_channels: int = 16
         self.cell_area: float = 0.16
+        self.cell_inverted: bool = False
         self.batch_name: str = "batch"
         self.res_name: str = "Giulio Barletta"
-        self.sampling_strategy: str = "linear"
+        self.sampling_strategy: str = "decreasing"
         self.max_iter: int = 500
+
+        if self.sampling_strategy == "decreasing":
+            self.generate_schedule()
 
         # camera configuration
         self.USE_CAMERA = True
@@ -305,13 +338,21 @@ class App(customtkinter.CTk):
         )
         self.area_input_button.grid(row=4, column=0, padx=20, pady=(10, 10))
 
+        # Initialize the cell inverted variable
+        self.inverted_input_button = customtkinter.CTkButton(
+            self.tabview.tab("Batch"),
+            text="Cell inverted",
+            command=self.open_inverted_dialog_event,
+        )
+        self.inverted_input_button.grid(row=5, column=0, padx=20, pady=(10, 10))
+
         # Initialize the batch name variable
         self.batch_input_button = customtkinter.CTkButton(
             self.tabview.tab("Batch"),
             text="Batch name",
             command=self.open_name_dialog_event,
         )
-        self.batch_input_button.grid(row=5, column=0, padx=20, pady=(10, 10))
+        self.batch_input_button.grid(row=6, column=0, padx=20, pady=(10, 10))
 
         # Initialize the researcher name variable
         self.res_input_button = customtkinter.CTkButton(
@@ -319,7 +360,7 @@ class App(customtkinter.CTk):
             text="Researcher's name",
             command=self.open_res_dialog_event,
         )
-        self.res_input_button.grid(row=6, column=0, padx=20, pady=(10, 10))
+        self.res_input_button.grid(row=7, column=0, padx=20, pady=(10, 10))
 
         ################################ column 2 ################################
 
@@ -388,7 +429,7 @@ class App(customtkinter.CTk):
         )
         self.textbox.insert(
             "15.0",
-            "- BATCH: Enter the number of active channels, the desired voltage for EL biasing, the cell area, the reference of the cell/batch, and the name of the researcher performing the measurements. \n",
+            "- BATCH: Enter the number of active channels, the desired voltage for EL biasing, the cell area, if the cell is inverted (True means stack is n-i-p), the reference of the cell/batch, and the name of the researcher performing the measurements. \n",
         )
         self.textbox.insert(
             "16.0",
@@ -431,7 +472,51 @@ class App(customtkinter.CTk):
         )
         self.textbox.configure(state="disabled")
 
+        # Run the startup camera gate once the window is ready:
+        self.after(100, self._startup_camera_gate)
+
     ################################ function definitions ################################
+
+    def _startup_camera_gate(self):
+        """Run once at startup: if no camera, show a modal error window and quit on close."""
+        if self.USE_CAMERA:
+            # Lazy import to avoid circulars and to keep startup quick
+            try:
+                from camera import any_camera_connected
+            except Exception:
+
+                def any_camera_connected():
+                    return False
+
+            if not any_camera_connected():
+                popup = customtkinter.CTkToplevel(self)
+                popup.title("Error")
+                popup.geometry("460x140")
+                popup.transient(self)  # keep on top of the main window
+                popup.attributes("-topmost", True)
+                popup.grab_set()  # modal: block interaction with the main app
+
+                # Message only — no extra buttons, per your request
+                msg = customtkinter.CTkLabel(
+                    popup,
+                    text="Error: no camera detected.\nMake sure it is correctly plugged in!",
+                    font=customtkinter.CTkFont(size=16, weight="bold"),
+                    justify="center",
+                    padx=20,
+                    pady=20,
+                )
+                msg.pack(expand=True, fill="both")
+
+                # When user clicks the window's ✕, close the whole app
+                def _close_everything():
+                    try:
+                        popup.grab_release()
+                    except Exception:
+                        pass
+                    popup.destroy()
+                    self.destroy()  # shuts down the entire application
+
+                popup.protocol("WM_DELETE_WINDOW", _close_everything)
 
     # appearance functions
 
@@ -523,7 +608,7 @@ class App(customtkinter.CTk):
         )
         # Get the input from the dialog
         EL_voltage = dialog_voltage.get_input()
-        print(f"EL Voltage): {EL_voltage}")
+        print(f"EL Voltage: {EL_voltage}")
 
         # Store the input in the instance variable
         self.EL_voltage = float(EL_voltage)
@@ -539,6 +624,23 @@ class App(customtkinter.CTk):
 
         # Store the input in the instance variable
         self.cell_area = float(cell_area)
+
+    def open_inverted_dialog_event(self):
+        dialog_inverted = customtkinter.CTkInputDialog(
+            text="Type `True` if the cell is inverted, `False` otherwise:",
+            title="Batch Settings",
+        )
+        # Get the input from the dialog
+        cell_inverted = dialog_inverted.get_input()
+        print(f"Cell inverted: {cell_inverted}")
+
+        # Store the input in the instance variable
+        if cell_inverted == "True":
+            self.cell_inverted = True
+        elif cell_inverted == "False":
+            self.cell_inverted = False
+        else:
+            print("Input must be one of ['True', 'False']")
 
     def open_name_dialog_event(self):
         dialog_name = customtkinter.CTkInputDialog(
@@ -649,7 +751,7 @@ class App(customtkinter.CTk):
     def open_summary_window(self):
         summary_window = customtkinter.CTkToplevel(self)
         summary_window.title("Summary")
-        summary_window.geometry("300x200")
+        summary_window.geometry("300x400")
 
         summary_label = customtkinter.CTkLabel(
             summary_window,
@@ -663,6 +765,7 @@ class App(customtkinter.CTk):
             + f"- Camera exposure time (SC): {str(self.exp_time_sc)} ms \n"
             + f"- EL Voltage: {str(self.EL_voltage)} V \n"
             + f"- Cell area: {str(self.cell_area)} cm2 \n"
+            + f"- Cell inverted: {str(self.cell_inverted)} \n"
             + f"- Batch name: {self.batch_name} \n"
             + f"- Researcher's name: {self.res_name} \n"
             + f"- Acquisition strategy: {self.sampling_strategy} \n",
@@ -691,39 +794,40 @@ class App(customtkinter.CTk):
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
 
-        GPIO_PIN_BLUE = 2
-        GPIO_PIN_WHITE = 21
-
-        GPIO.setup(GPIO_PIN_BLUE, GPIO.OUT)
-        GPIO.output(GPIO_PIN_BLUE, GPIO.LOW)
-        GPIO.setup(GPIO_PIN_WHITE, GPIO.OUT)
-        GPIO.output(GPIO_PIN_WHITE, GPIO.LOW)
+        GPIO.setup(self.GPIO_PIN_BLUE, GPIO.OUT)
+        GPIO.output(self.GPIO_PIN_BLUE, GPIO.LOW)
+        GPIO.setup(self.GPIO_PIN_WHITE, GPIO.OUT)
+        GPIO.output(self.GPIO_PIN_WHITE, GPIO.LOW)
 
         self.ensure_api_connection()
 
-        for channel_id in range(self.active_channels):
-            print(f"[Channel {channel_id}] Setting active channel")
-            self.api.set_active_channel(channel_id)
+        if self.cycle_counter == 0:
+            for channel_id in range(self.active_channels):
+                print(f"[Channel {channel_id}] Setting active channel")
+                self.api.set_active_channel(channel_id)
 
-            settings_str = self.api.get_channel_settings()
-            data = json.loads(settings_str)
+                settings_str = self.api.get_channel_settings()
+                data = json.loads(settings_str)
 
-            # Modify settings
-            data["Enable"] = True
-            data["User"] = str(self.res_name)
-            data["Device"] = str(self.batch_name)
-            data["Channel"]["InvertedStructure"] = True
-            data["Tracking"]["Algorithm"] = "Fixed Voltage"
-            data["Tracking"]["ConstantOutput"] = float(self.EL_voltage)
-            data["Tracking"]["jvInterval"] = {"Value": self.iter_time, "Unit": "sec"}
-            data["Tracking"]["TestDuration"] = {
-                "Value": self.max_iter * self.iter_time,
-                "Unit": "sec",
-            }
-            data["Cell"]["Area (cm2)"] = float(self.cell_area)
+                # Modify settings
+                data["Enable"] = True
+                data["User"] = str(self.res_name)
+                data["Device"] = str(self.batch_name)
+                data["Channel"]["Inverted"] = self.cell_inverted
+                data["Tracking"]["Algorithm"] = "Fixed Voltage"
+                data["Tracking"]["ConstantOutput"] = float(self.EL_voltage)
+                data["Tracking"]["jvInterval"] = {
+                    "Value": self.iter_time,
+                    "Unit": "sec",
+                }
+                data["Tracking"]["TestDuration"] = {
+                    "Value": self.max_iter * self.iter_time,
+                    "Unit": "sec",
+                }
+                data["Cell"]["Area (cm2)"] = float(self.cell_area)
 
-            self.api.set_channel_settings(json.dumps(data))
-            print(f"[Channel {channel_id}] Settings updated.")
+                self.api.set_channel_settings(json.dumps(data))
+                print(f"[Channel {channel_id}] Settings updated.")
 
         try:
             # ==== WHITE LED (JV) ====
@@ -734,7 +838,7 @@ class App(customtkinter.CTk):
                     self.active_channels,
                     self.JV_time,
                     self.cycle_counter,
-                    GPIO_PIN_WHITE,
+                    self.GPIO_PIN_WHITE,
                 )
                 print(f"\n[{self.cycle_counter}] White LED OFF.")
 
@@ -794,7 +898,7 @@ class App(customtkinter.CTk):
                         batch_name,
                         acquire,
                         self.USE_CAMERA,
-                        GPIO_PIN_BLUE,
+                        self.GPIO_PIN_BLUE,
                     )
                     self.log_metadata(image_type="PL")
                 except Exception as e:
@@ -812,6 +916,13 @@ class App(customtkinter.CTk):
 
     def cycle_process(self):
         self.ensure_api_connection()
+
+        # ---------- DARK REFERENCE (start of routine) ----------
+        from camera import acquisition_EL
+
+        dark_output_dir = f"{str(self.base_dir)}/{self.res_name}/{self.current_date}"
+        acquisition_EL(int(self.exp_time), f"{self.batch_name}_dark", dark_output_dir)
+
         initial_start = time.time()
         try:
             while self.cycle_running and self.cycle_counter < self.max_iter:
@@ -928,10 +1039,21 @@ class App(customtkinter.CTk):
             except Exception as e:
                 print(f"Failed to connect to API: {e}")
 
+    # Function to ensure workers stop
+    def _on_close(self):
+        # ensure worker stops
+        self.cycle_running = False
+        if self.run_thread and self.run_thread.is_alive():
+            self.run_thread.join(timeout=3)
+        # switch off LEDs you use (fill the tuple)
+        gpio_safe_cleanup(pins_off=(self.GPIO_PIN_WHITE, self.GPIO_PIN_BLUE))
+        self.destroy()
+
 
 ################################ main ################################
 
 
 if __name__ == "__main__":
+    _lock_fd = _acquire_single_instance_lock()
     app = App()
     app.mainloop()
