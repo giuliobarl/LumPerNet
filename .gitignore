@@ -185,3 +185,6 @@ videos*
 # temp notebooks and old codes
 _old_codes/*
 *temp*
+
+# outputs from tests
+runs/

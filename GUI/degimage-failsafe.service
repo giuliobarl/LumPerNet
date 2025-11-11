@@ -1,0 +1,12 @@
+[Unit]
+Description=DegImage GPIO fail-safe watchdog
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 /usr/local/bin/degimage_failsafe.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

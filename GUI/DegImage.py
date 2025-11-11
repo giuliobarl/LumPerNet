@@ -22,8 +22,13 @@ try:
 except ImportError:
     configure_path = None
 
+import faulthandler
+
 from arkeo_api import MeasurementAPI
+from camera import acquisition_PL
 from cycle_commands import run_EL, run_JV, run_PL
+
+faulthandler.enable(all_threads=True)
 
 customtkinter.set_appearance_mode(
     "Light"
@@ -31,6 +36,22 @@ customtkinter.set_appearance_mode(
 customtkinter.set_default_color_theme(
     "blue"
 )  # Themes: "blue" (standard), "green", "dark-blue"
+
+HEARTBEAT = "/tmp/degimage.heartbeat"
+
+
+def _hb(stop_event: threading.Event):
+    """Touch a heartbeat file every 2 s until told to stop."""
+    while not stop_event.is_set():
+        try:
+            # create if missing, else update mtime
+            try:
+                os.utime(HEARTBEAT, None)
+            except FileNotFoundError:
+                open(HEARTBEAT, "w").close()
+        except Exception:
+            pass
+        stop_event.wait(2.0)  # sleeps but wakes fast on stop
 
 
 def _acquire_single_instance_lock(path="/tmp/degimage.lock"):
@@ -45,13 +66,26 @@ def _acquire_single_instance_lock(path="/tmp/degimage.lock"):
 class RedirectText:
     def __init__(self, text_widget):
         self.text_widget = text_widget
-        self.terminal = sys.stdout
+        self.terminal = sys.stdout  # keep mirroring to real stdout if you want
 
     def write(self, message):
-        self.terminal.write(message)
-        self.terminal.flush()
-        self.text_widget.insert(END, message)
-        self.text_widget.see(END)
+        try:
+            self.terminal.write(message)
+            self.terminal.flush()
+        except Exception:
+            pass
+        # schedule UI update on Tk main loop
+        try:
+            self.text_widget.after(0, self._append, message)
+        except Exception:
+            pass
+
+    def _append(self, message):
+        try:
+            self.text_widget.insert("end", message)
+            self.text_widget.see("end")
+        except Exception:
+            pass
 
     def flush(self):
         pass
@@ -91,11 +125,13 @@ class App(customtkinter.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # attribute initialization
-        self.iter_time: int = 180
+        self.iter_time: int = 240
         self.JV_time: int = 30
         self.PL_time: int = 10
         self.EL_time: int = 10
         self.EL_voltage: float = 1.4
+        self.t_recover: int = 60
+        self.t_relax: int = 15
         self.exp_time: int = 1000
         self.exp_time_sc: int = 2000
         self.active_channels: int = 16
@@ -104,7 +140,7 @@ class App(customtkinter.CTk):
         self.batch_name: str = "batch"
         self.res_name: str = "Giulio Barletta"
         self.sampling_strategy: str = "decreasing"
-        self.max_iter: int = 500
+        self.max_iter: int = 360
 
         if self.sampling_strategy == "decreasing":
             self.generate_schedule()
@@ -203,7 +239,9 @@ class App(customtkinter.CTk):
         # create textbox
         # Create a label for the first line with larger font size
         self.textbox = customtkinter.CTkTextbox(self, width=200)
-        self.textbox.grid(row=0, column=1, padx=(20, 0), pady=(20, 0), sticky="nsew")
+        self.textbox.grid(
+            row=0, column=1, columnspan=2, padx=(20, 0), pady=(20, 0), sticky="nsew"
+        )
 
         # create tabview
         self.tabview = customtkinter.CTkTabview(self, width=200)
@@ -235,21 +273,37 @@ class App(customtkinter.CTk):
         )
         self.white_input_button.grid(row=2, column=0, padx=20, pady=(10, 10))
 
+        # Initialize the recovery time variable (after electrical biasing / JV)
+        self.recover_input_button = customtkinter.CTkButton(
+            self.tabview.tab("Lights"),
+            text="Recovery time after white soak (s)",
+            command=self.open_recov_dialog_event,
+        )
+        self.recover_input_button.grid(row=3, column=0, padx=20, pady=(10, 10))
+
         # Initialize the blue lights' time variable
         self.blue_input_button = customtkinter.CTkButton(
             self.tabview.tab("Lights"),
             text="Blue LEDs' soaking time (s)",
             command=self.open_blue_dialog_event,
         )
-        self.blue_input_button.grid(row=3, column=0, padx=20, pady=(10, 10))
+        self.blue_input_button.grid(row=4, column=0, padx=20, pady=(10, 10))
+
+        # Initialize the relaxing time variable (after blue light soaking)
+        self.relax_input_button = customtkinter.CTkButton(
+            self.tabview.tab("Lights"),
+            text="Recovery time after blue soak (s)",
+            command=self.open_relax_dialog_event,
+        )
+        self.relax_input_button.grid(row=5, column=0, padx=20, pady=(10, 10))
 
         # Initialize the lights' off time variable
         self.off_input_button = customtkinter.CTkButton(
             self.tabview.tab("Lights"),
-            text="LEDs' off time (s)",
+            text="LEDs' off time for EL (s)",
             command=self.open_off_dialog_event,
         )
-        self.off_input_button.grid(row=4, column=0, padx=20, pady=(10, 10))
+        self.off_input_button.grid(row=6, column=0, padx=20, pady=(10, 10))
 
         ###### CAMERA SETTINGS ######
         self.camera_settings_label = customtkinter.CTkLabel(
@@ -364,14 +418,6 @@ class App(customtkinter.CTk):
 
         ################################ column 2 ################################
 
-        # Latest image display (Top section)
-        self.image_label = customtkinter.CTkLabel(self, text="Latest image")
-        self.image_label.grid(
-            row=0, column=2, padx=(20, 0), pady=(20, 0), sticky="nsew"
-        )
-
-        self.update_latest_image_periodically()
-
         # Terminal log display (Bottom section)
         self.log_text = Text(self, height=10, width=40, wrap="word", state="normal")
         self.log_text.grid(row=1, column=2, padx=(20, 0), pady=(20, 0), sticky="nsew")
@@ -475,6 +521,12 @@ class App(customtkinter.CTk):
         # Run the startup camera gate once the window is ready:
         self.after(100, self._startup_camera_gate)
 
+        self._hb_stop = threading.Event()
+        self._hb_thread = threading.Thread(
+            target=_hb, args=(self._hb_stop,), daemon=True
+        )
+        self._hb_thread.start()
+
     ################################ function definitions ################################
 
     def _startup_camera_gate(self):
@@ -518,6 +570,14 @@ class App(customtkinter.CTk):
 
                 popup.protocol("WM_DELETE_WINDOW", _close_everything)
 
+    def _date_root(self) -> str:
+        """Return the absolute path to today's date folder: <base/res_name/YYYY-MM-DD>."""
+        import datetime
+        import os
+
+        today = datetime.datetime.now().date().strftime("%Y-%m-%d")
+        return os.path.join(str(self.base_dir), self.res_name, today)
+
     # appearance functions
 
     def change_appearance_mode_event(self, new_appearance_mode: str):
@@ -529,38 +589,72 @@ class App(customtkinter.CTk):
 
     ###### lights settings functions ######
 
-    def open_blue_dialog_event(self):
-        dialog_blue = customtkinter.CTkInputDialog(
-            text="Type in the blue LEDs' ON time (s):", title="Lights' Settings"
-        )
-        # Get the input from the dialog
-        blue_time = dialog_blue.get_input()
-        print(f"Blue LEDs' ON time: {blue_time} s")
-
-        # Store the input in the instance variable
-        self.PL_time = int(blue_time)
-
-    def open_off_dialog_event(self):
-        dialog_off = customtkinter.CTkInputDialog(
-            text="Type in the LEDs' OFF time (s):", title="Lights' Settings"
-        )
-        # Get the input from the dialog
-        off_time = dialog_off.get_input()
-        print(f"LEDs' OFF time: {off_time} s")
-
-        # Store the input in the instance variable
-        self.EL_time = int(off_time)
-
     def open_white_dialog_event(self):
         dialog_white = customtkinter.CTkInputDialog(
             text="Type in the white LED's ON time (s):", title="Lights' Settings"
         )
         # Get the input from the dialog
         white_time = dialog_white.get_input()
-        print(f"White LEDs' ON time: {white_time} s")
+        if white_time is None or not str(white_time).strip():
+            print(f"No value inserted, falling back to default: {self.JV_time} s")
+        else:
+            print(f"White LEDs ON time: {white_time} s")
+            # Store the input in the instance variable
+            self.JV_time = int(white_time)
 
-        # Store the input in the instance variable
-        self.JV_time = int(white_time)
+    def open_recov_dialog_event(self):
+        dialog_recov = customtkinter.CTkInputDialog(
+            text="Type in the recovery time between white and blue light soaking (s):",
+            title="Lights' Settings",
+        )
+        # Get the input from the dialog
+        recov_time = dialog_recov.get_input()
+        if recov_time is None or not str(recov_time).strip():
+            print(f"No value inserted, falling back to default: {self.t_recover} s")
+        else:
+            print(f"Recovery time: {recov_time} s")
+            # Store the input in the instance variable
+            self.t_recover = int(recov_time)
+
+    def open_blue_dialog_event(self):
+        dialog_blue = customtkinter.CTkInputDialog(
+            text="Type in the blue LEDs' ON time (s):", title="Lights' Settings"
+        )
+        # Get the input from the dialog
+        blue_time = dialog_blue.get_input()
+        if blue_time is None or not str(blue_time).strip():
+            print(f"No value inserted, falling back to default: {self.PL_time} s")
+        else:
+            print(f"Blue LEDs' ON time: {blue_time} s")
+            # Store the input in the instance variable
+            self.PL_time = int(blue_time)
+
+    def open_relax_dialog_event(self):
+        dialog_relax = customtkinter.CTkInputDialog(
+            text="Type in the recovery time between blue light soaking and electrical biasing (s):",
+            title="Lights' Settings",
+        )
+        # Get the input from the dialog
+        relax_time = dialog_relax.get_input()
+        if relax_time is None or not str(relax_time).strip():
+            print(f"No value inserted, falling back to default: {self.t_relax} s")
+        else:
+            print(f"Recovery time: {relax_time} s")
+            # Store the input in the instance variable
+            self.t_relax = int(relax_time)
+
+    def open_off_dialog_event(self):
+        dialog_off = customtkinter.CTkInputDialog(
+            text="Type in the forward biasing time (s):", title="Lights' Settings"
+        )
+        # Get the input from the dialog
+        off_time = dialog_off.get_input()
+        if off_time is None or not str(off_time).strip():
+            print(f"No value inserted, falling back to default: {self.EL_time} s")
+        else:
+            print(f"Forward bias time: {off_time} s")
+            # Store the input in the instance variable
+            self.EL_time = int(off_time)
 
     ###### camera settings functions ######
 
@@ -571,10 +665,12 @@ class App(customtkinter.CTk):
         )
         # Get the input from the dialog
         exposure = dialog_exposure.get_input()
-        print(f"Exposure time: {exposure} ms")
-
-        # Store the input in the instance variable
-        self.exp_time = int(exposure)
+        if exposure is None or not str(exposure).strip():
+            print(f"No value inserted, falling back to default: {self.exp_time} s")
+        else:
+            print(f"Exposure time: {exposure} ms")
+            # Store the input in the instance variable
+            self.exp_time = int(exposure)
 
     def open_sc_exposure_dialog_event(self):
         dialog_exposure = customtkinter.CTkInputDialog(
@@ -582,10 +678,12 @@ class App(customtkinter.CTk):
         )
         # Get the input from the dialog
         exposure = dialog_exposure.get_input()
-        print(f"SC exposure time: {exposure} ms")
-
-        # Store the input in the instance variable
-        self.exp_time_sc = int(exposure)
+        if exposure is None or not str(exposure).strip():
+            print(f"No value inserted, falling back to default: {self.exp_time_sc} s")
+        else:
+            print(f"SC exposure time: {exposure} ms")
+            # Store the input in the instance variable
+            self.exp_time_sc = int(exposure)
 
     ###### batch settings functions ######
 
@@ -596,10 +694,12 @@ class App(customtkinter.CTk):
         )
         # Get the input from the dialog
         active_channels = dialog_channels.get_input()
-        print(f"Active channels: {active_channels}")
-
-        # Store the input in the instance variable
-        self.active_channels = int(active_channels)
+        if active_channels is None or not str(active_channels).strip():
+            print(f"No value inserted, falling back to default: {self.active_channels}")
+        else:
+            print(f"Active channels: {active_channels}")
+            # Store the input in the instance variable
+            self.active_channels = int(active_channels)
 
     def open_ELvoltage_dialog_event(self):
         dialog_voltage = customtkinter.CTkInputDialog(
@@ -608,10 +708,12 @@ class App(customtkinter.CTk):
         )
         # Get the input from the dialog
         EL_voltage = dialog_voltage.get_input()
-        print(f"EL Voltage: {EL_voltage}")
-
-        # Store the input in the instance variable
-        self.EL_voltage = float(EL_voltage)
+        if EL_voltage is None or not str(EL_voltage).strip():
+            print(f"No value inserted, falling back to default: {self.EL_voltage}")
+        else:
+            print(f"EL Voltage: {EL_voltage}")
+            # Store the input in the instance variable
+            self.EL_voltage = float(EL_voltage)
 
     def open_area_dialog_event(self):
         dialog_area = customtkinter.CTkInputDialog(
@@ -620,10 +722,12 @@ class App(customtkinter.CTk):
         )
         # Get the input from the dialog
         cell_area = dialog_area.get_input()
-        print(f"Cell Area: {cell_area} cm2")
-
-        # Store the input in the instance variable
-        self.cell_area = float(cell_area)
+        if cell_area is None or not str(cell_area).strip():
+            print(f"No value inserted, falling back to default: {self.cell_area}")
+        else:
+            print(f"Cell Area: {cell_area} cm2")
+            # Store the input in the instance variable
+            self.cell_area = float(cell_area)
 
     def open_inverted_dialog_event(self):
         dialog_inverted = customtkinter.CTkInputDialog(
@@ -633,7 +737,6 @@ class App(customtkinter.CTk):
         # Get the input from the dialog
         cell_inverted = dialog_inverted.get_input()
         print(f"Cell inverted: {cell_inverted}")
-
         # Store the input in the instance variable
         if cell_inverted == "True":
             self.cell_inverted = True
@@ -649,10 +752,12 @@ class App(customtkinter.CTk):
         )
         # Get the input from the dialog
         batch_name = dialog_name.get_input()
-        print(f"Batch name: {batch_name}")
-
-        # Store the input in the instance variable
-        self.batch_name = batch_name
+        if batch_name is None or not str(batch_name).strip():
+            print(f"No value inserted, falling back to default: {self.batch_name}")
+        else:
+            print(f"Batch name: {batch_name}")
+            # Store the input in the instance variable
+            self.batch_name = batch_name
 
     def open_res_dialog_event(self):
         dialog_res = customtkinter.CTkInputDialog(
@@ -661,10 +766,12 @@ class App(customtkinter.CTk):
         )
         # Get the input from the dialog
         res_name = dialog_res.get_input()
-        print("Researcher's name: " + res_name)
-
-        # Store the input in the instance variable
-        self.res_name = res_name
+        if res_name is None or not str(res_name).strip():
+            print(f"No value inserted, falling back to default: {self.res_name}")
+        else:
+            print("Researcher's name: " + res_name)
+            # Store the input in the instance variable
+            self.res_name = res_name
 
     ###### cycle settings functions ######
 
@@ -673,8 +780,11 @@ class App(customtkinter.CTk):
             text="Type in the iteration interval (s):", title="Cycle Settings"
         )
         iter_time = dialog_iter.get_input()
-        print(f"Time between iterations: {iter_time}")
-        self.iter_time = int(iter_time)
+        if iter_time is None or not str(iter_time).strip():
+            print(f"No value inserted, falling back to default: {self.iter_time} s")
+        else:
+            print(f"Time between iterations: {iter_time}")
+            self.iter_time = int(iter_time)
 
     def open_strategy_dialog_event(self):
         dialog_strategy = customtkinter.CTkInputDialog(
@@ -683,10 +793,14 @@ class App(customtkinter.CTk):
         )
         # Get the input from the dialog
         acq_strategy = dialog_strategy.get_input()
-        print(f"Acquisition strategy: {acq_strategy}")
-
-        # Store the input in the instance variable
-        self.sampling_strategy = acq_strategy
+        if acq_strategy is None or not str(acq_strategy).strip():
+            print(
+                f"No value inserted, falling back to default: {self.sampling_strategy}"
+            )
+        else:
+            print(f"Acquisition strategy: {acq_strategy}")
+            # Store the input in the instance variable
+            self.sampling_strategy = acq_strategy
         if self.sampling_strategy == "decreasing":
             self.generate_schedule()
 
@@ -696,8 +810,11 @@ class App(customtkinter.CTk):
             title="Cycle Settings",
         )
         max_iter = dialog_iter.get_input()
-        print(f"Maximum number of iterations: {max_iter}")
-        self.max_iter = int(max_iter)
+        if max_iter is None or not str(max_iter).strip():
+            print(f"No value inserted, falling back to default: {self.max_iter}")
+        else:
+            print(f"Maximum number of iterations: {max_iter}")
+            self.max_iter = int(max_iter)
 
     # command line function
 
@@ -708,16 +825,54 @@ class App(customtkinter.CTk):
         if user_input == "summary":
             self.open_summary_window()
 
+        elif user_input == "dark":
+            self.cmd_dark()
+
         elif user_input == "run":
+            total_time = (
+                self.JV_time
+                + self.t_recover
+                + self.PL_time * 2
+                + self.t_relax
+                + self.EL_time
+                + 10
+            )
+            if total_time > self.iter_time:
+                print(
+                    "The sum of individual times input cannot be larger than the iteration duration!"
+                )
+                print(
+                    f"With these dauration, iterations should be of at least {total_time}."
+                )
+                return
             self.user_input = user_input
             self.run_thread = threading.Thread(target=self.process_run)
             self.run_thread.start()
 
         elif user_input == "cycle":
+            total_time = (
+                self.JV_time
+                + self.t_recover
+                + self.PL_time * 2
+                + self.t_relax
+                + self.EL_time
+                + 10
+            )
+            if total_time > self.iter_time:
+                print(
+                    "The sum of individual times input cannot be larger than the iteration duration!"
+                )
+                print(
+                    f"With these dauration, iterations should be of at least {total_time}."
+                )
+                return
             self.user_input = user_input
             if not self.cycle_running:
+                self.cycle_counter = 0
                 self.cycle_running = True
-                self.cycle_thread = threading.Thread(target=self.cycle_process)
+                self.cycle_thread = threading.Thread(
+                    target=self.cycle_process, daemon=False
+                )
                 self.cycle_thread.start()
                 print("\n Cycle started.")
             else:
@@ -726,14 +881,13 @@ class App(customtkinter.CTk):
         elif user_input == "stop":
             if self.cycle_running:
                 self.cycle_running = False
-                self.cycle_counter = 0
                 print("\n Cycle stopped.")
             else:
                 print("\n No cycle to stop.")
 
         else:
             print(
-                "\n Command not valid. Enter one of 'summary', 'run', 'cycle', or 'stop'."
+                "\n Command not valid. Enter one of 'summary', 'dark', 'run', 'cycle', or 'stop'."
             )
 
         # Optionally clear the entry field after processing the command
@@ -751,16 +905,19 @@ class App(customtkinter.CTk):
     def open_summary_window(self):
         summary_window = customtkinter.CTkToplevel(self)
         summary_window.title("Summary")
-        summary_window.geometry("300x400")
+        summary_window.geometry("450x400")
 
         summary_label = customtkinter.CTkLabel(
             summary_window,
             text="Settings summary. \n"
+            + f"- Maximum number of iterations: {int(self.max_iter)}"
             + f"- Interval between iterations: {str(self.iter_time)} s \n"
             + f"- Number of active channels: {str(self.active_channels)} \n"
             + f"- White LED's ON time: {str(self.JV_time)} s \n"
-            + f"- EL biasing time: {str(self.EL_time)} s \n"
+            + f"- Recovery time between white and blue light soaking: {str(self.t_recover)} s \n"
             + f"- Blue LEDs' ON time: {str(self.PL_time)} s \n"
+            + f"- Recovery time between blue light soaking and electrical biasing: {str(self.t_relax)} s \n"
+            + f"- EL biasing time: {str(self.EL_time)} s \n"
             + f"- Camera exposure time (OC): {str(self.exp_time)} ms \n"
             + f"- Camera exposure time (SC): {str(self.exp_time_sc)} ms \n"
             + f"- EL Voltage: {str(self.EL_voltage)} V \n"
@@ -807,15 +964,24 @@ class App(customtkinter.CTk):
                 self.api.set_active_channel(channel_id)
 
                 settings_str = self.api.get_channel_settings()
-                data = json.loads(settings_str)
+                if not settings_str:
+                    print(
+                        f"[Channel {channel_id}] API offline; skipping initial settings."
+                    )
+                    continue
+                try:
+                    data = json.loads(settings_str)
+                except Exception:
+                    print(f"[Channel {channel_id}] Bad settings JSON; skipping.")
+                    continue
 
-                # Modify settings
+                # Modify settings...
                 data["Enable"] = True
                 data["User"] = str(self.res_name)
                 data["Device"] = str(self.batch_name)
                 data["Channel"]["Inverted"] = self.cell_inverted
-                data["Tracking"]["Algorithm"] = "Fixed Voltage"
-                data["Tracking"]["ConstantOutput"] = float(self.EL_voltage)
+                data["Tracking"]["Algorithm"] = "Open circuit"
+                # data["Tracking"]["ConstantOutput"] = float(self.EL_voltage)
                 data["Tracking"]["jvInterval"] = {
                     "Value": self.iter_time,
                     "Unit": "sec",
@@ -832,7 +998,6 @@ class App(customtkinter.CTk):
         try:
             # ==== WHITE LED (JV) ====
             if int(self.JV_time) > 0:
-                print(f"\n[{self.cycle_counter}] White light soaking...")
                 run_JV(
                     self.api,
                     self.active_channels,
@@ -841,36 +1006,6 @@ class App(customtkinter.CTk):
                     self.GPIO_PIN_WHITE,
                 )
                 print(f"\n[{self.cycle_counter}] White LED OFF.")
-
-            # ==== EL Bias (LEDs OFF) ====
-            if int(self.EL_time) > 0:
-                self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
-                output_dir = (
-                    f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/EL"
-                )
-                self.EL_path = output_dir
-
-                batch_name = (
-                    f"{self.batch_name}_{self.cycle_counter}"
-                    if self.cycle_running
-                    else self.batch_name
-                )
-                print(f"\n[{self.cycle_counter}] EL soaking (LEDs OFF)...")
-
-                try:
-                    run_EL(
-                        self.EL_time,
-                        self.exp_time,
-                        self.EL_path,
-                        batch_name,
-                        acquire,
-                        self.USE_CAMERA,
-                    )
-                    self.log_metadata(image_type="EL")
-                except Exception as e:
-                    print(f"\n[{self.cycle_counter}]: {e}")
-
-                print(f"\n[{self.cycle_counter}] EL bias OFF.")
 
             # ==== BLUE LED (PL) ====
             if int(self.PL_time) > 0:
@@ -885,12 +1020,12 @@ class App(customtkinter.CTk):
                     if self.cycle_running
                     else self.batch_name
                 )
-                print(f"\n[{self.cycle_counter}] Blue light soaking...")
 
                 try:
                     run_PL(
                         self.api,
                         self.active_channels,
+                        self.t_recover,
                         self.PL_time,
                         self.exp_time,
                         self.exp_time_sc,
@@ -906,6 +1041,39 @@ class App(customtkinter.CTk):
 
                 print(f"\n[{self.cycle_counter}] Blue LEDs OFF.")
 
+            # ==== EL Bias (LEDs OFF) ====
+            if int(self.EL_time) > 0:
+                self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
+                output_dir = (
+                    f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/EL"
+                )
+                self.EL_path = output_dir
+
+                batch_name = (
+                    f"{self.batch_name}_{self.cycle_counter}"
+                    if self.cycle_running
+                    else self.batch_name
+                )
+
+                try:
+                    run_EL(
+                        self.api,
+                        self.active_channels,
+                        self.t_relax,
+                        self.EL_time,
+                        self.exp_time,
+                        self.EL_path,
+                        batch_name,
+                        acquire,
+                        self.USE_CAMERA,
+                        self.EL_voltage,
+                    )
+                    self.log_metadata(image_type="EL")
+                except Exception as e:
+                    print(f"\n[{self.cycle_counter}]: {e}")
+
+                print(f"\n[{self.cycle_counter}] EL bias OFF.")
+
         finally:
             if self.user_input == "run":
                 for ch in range(self.active_channels):
@@ -917,12 +1085,6 @@ class App(customtkinter.CTk):
     def cycle_process(self):
         self.ensure_api_connection()
 
-        # ---------- DARK REFERENCE (start of routine) ----------
-        from camera import acquisition_EL
-
-        dark_output_dir = f"{str(self.base_dir)}/{self.res_name}/{self.current_date}"
-        acquisition_EL(int(self.exp_time), f"{self.batch_name}_dark", dark_output_dir)
-
         initial_start = time.time()
         try:
             while self.cycle_running and self.cycle_counter < self.max_iter:
@@ -932,7 +1094,7 @@ class App(customtkinter.CTk):
                 # If we’re ahead of schedule, wait until the scheduled time
                 if now < scheduled_start:
                     wait_time = scheduled_start - now
-                    print(f"Starting new iteration in {wait_time:.2f} s.")
+                    print(f"\nStarting new iteration in {wait_time:.2f} s.")
                     time.sleep(wait_time)
 
                 # Decide if we should acquire based on strategy
@@ -979,56 +1141,72 @@ class App(customtkinter.CTk):
         i = 0
         while i <= max_iter:
             self.decreasing_schedule.add(i)
-            if i < 50:
+            if i < 100:
                 step = 1
-            elif i < 100:
-                step = 2
             elif i < 200:
-                step = 5
+                step = 2
             else:
-                step = 10
+                step = 5
             i += step
 
-    # Functions to handle image display
+    def _acquire_reference_series(self, kind: str, batch: str):
+        """
+        Acquire a reference image series in the date folder for both PL exposures:
+        - kind='dark' or 'flat'
+        Saves as: <date>/<kind>_PLoc_<exp>ms.tiff and <kind>_PLsc_<exp>ms.tiffthor
+        """
+        date_root = self._date_root()
+        os.makedirs(date_root, exist_ok=True)
 
-    def get_latest_image(self):
-        folder_path = Path(self.PL_path)
-        if not Path(folder_path).is_dir():
-            return None
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
 
-        tiff_files = [f for f in folder_path.iterdir() if f.suffix.lower() == ".tiff"]
-        if not tiff_files:
-            return None
+        # uses self.exp_time
+        if int(self.exp_time) > 0:
+            name = f"{batch}_{kind}_{int(self.exp_time)}ms"
+            try:
+                GPIO.setup(self.GPIO_PIN_WHITE, GPIO.OUT)
+                if kind == "flat":
+                    GPIO.output(self.GPIO_PIN_WHITE, GPIO.HIGH)
+                acquisition_PL(int(self.exp_time), name, date_root)
+                print(f"[{kind}] saved: {os.path.join(date_root, name + '.tiff')}")
+                if kind == "flat":
+                    GPIO.cleanup()
+            except Exception as e:
+                print(f"[{kind}] {int(self.exp_time)} ms failed ({e})")
 
-        latest_file = max(tiff_files, key=lambda f: f.stat().st_birthtime)
-        return latest_file
+        # uses self.exp_time_sc
+        if int(self.exp_time_sc) > 0:
+            name = f"{kind}_{int(self.exp_time_sc)}ms"
+            try:
+                GPIO.setup(self.GPIO_PIN_WHITE, GPIO.OUT)
+                acquisition_PL(int(self.exp_time_sc), name, date_root)
+                if kind == "flat":
+                    GPIO.output(self.GPIO_PIN_WHITE, GPIO.HIGH)
+                print(f"[{kind}] saved: {os.path.join(date_root, name + '.tiff')}")
+                if kind == "flat":
+                    GPIO.cleanup()
+            except Exception as e:
+                print(f"[{kind}] {int(self.exp_time_sc)} ms failed ({e})")
 
-    def update_latest_image(self):
-        latest_image_path = self.get_latest_image()
-        if latest_image_path is None:
-            self.image_label.configure(text="No images available")
+    def cmd_dark(self):
+        """Acquire dark images at both exposures into the date folder."""
+        if not self.USE_CAMERA:
+            print("[dark] Camera disabled; skipped.")
             return
+        print("[dark] Acquiring dark references...")
+        self._acquire_reference_series("dark", self.batch_name)
 
-        try:
-            img_16bit = Image.open(latest_image_path)
-            img_array = np.asarray(img_16bit)
-
-            img_array = (img_array / 256).astype("uint8")
-            img_8bit = Image.fromarray(img_array, mode="L")
-
-            display_image = customtkinter.CTkImage(
-                light_image=img_8bit, dark_image=img_8bit, size=(196, 108)
-            )
-
-            self.image_label.configure(image=display_image, text="")
-            self.image_label.image = display_image
-
-        except Exception as e:
-            print(f"Error loading image: {e}")
-
-    def update_latest_image_periodically(self):
-        self.update_latest_image()
-        self.after(20000, self.update_latest_image_periodically)
+    def cmd_flat(self):
+        """
+        Acquire flat-field images at both exposures into the date folder.
+        Make sure your uniform illuminator/diffuser is in place before running.
+        """
+        if not self.USE_CAMERA:
+            print("[flat] Camera disabled; skipped.")
+            return
+        print("[flat] Acquiring flat-field references...")
+        self._acquire_reference_series("flat", self.batch_name)
 
     # Functions to handle Arkeo API
     def ensure_api_connection(self):
@@ -1047,6 +1225,15 @@ class App(customtkinter.CTk):
             self.run_thread.join(timeout=3)
         # switch off LEDs you use (fill the tuple)
         gpio_safe_cleanup(pins_off=(self.GPIO_PIN_WHITE, self.GPIO_PIN_BLUE))
+
+        try:
+            self._hb_stop.set()
+        except Exception:
+            pass
+        try:
+            os.remove(HEARTBEAT)  # optional; harmless if it fails
+        except Exception:
+            pass
         self.destroy()
 
 
