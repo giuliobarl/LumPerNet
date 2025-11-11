@@ -454,6 +454,12 @@ def main():
         help="Optional dark frame path for correction.",
     )
     parser.add_argument(
+        "--dark-map",
+        type=str,
+        default=None,
+        help='Per-modality dark frames, e.g. "EL=/path/dark_EL.tif,PLoc=/path/dark_PLoc.tif,PLsc=/path/dark_PLsc.tif".',
+    )
+    parser.add_argument(
         "--flat-field",
         type=str,
         default=None,
@@ -499,10 +505,40 @@ def main():
     flat = load_image_gray(Path(args.flat_field)) if args.flat_field else None
 
     # once per session (after loading dark with same preprocessing)
-    dmed = median_filter(dark, size=3)
-    dres = dark - dmed
-    d_sigma = 1.4826 * np.median(np.abs(dres - np.median(dres)))
-    hot_mask_static = dres > (8 * d_sigma)  # persistent hot pixels only
+    hot_mask_static = None
+    if dark is not None:
+        dmed = median_filter(dark, size=3)
+        dres = dark - dmed
+        d_sigma = 1.4826 * np.median(np.abs(dres - np.median(dres)))
+        hot_mask_static = dres > (8 * d_sigma)
+
+    # Optional per-modality darks: --dark-map "EL=...,PLoc=...,PLsc=..."
+    dark_by_mod = {}
+    hot_mask_by_mod = {}
+
+    if args.dark_map:
+        for tok in args.dark_map.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if "=" not in tok:
+                print(f"WARNING: skipping malformed entry in --dark-map: '{tok}'")
+                continue
+            key, val = tok.split("=", 1)
+            key = key.strip()
+            val = val.strip()
+            try:
+                dimg = load_image_gray(Path(val))
+                dark_by_mod[key] = dimg
+                # build a per-modality persistent hot-pixel mask
+                dmed = median_filter(dimg, size=3)
+                dres = dimg - dmed
+                d_sigma = 1.4826 * np.median(np.abs(dres - np.median(dres)))
+                hot_mask_by_mod[key] = dres > (8 * d_sigma)
+            except Exception as e:
+                print(
+                    f"WARNING: failed to load dark for modality '{key}' from '{val}': {e}"
+                )
 
     # ROI centers
     if args.roi_csv:
@@ -584,12 +620,18 @@ def main():
         for img_path in tqdm(images[m], desc=f"{m}", unit="img", leave=False):
             try:
                 img = load_image_gray(img_path)
+                # Pick per-modality dark if available, else fall back to global
+                d_use = dark_by_mod.get(m, dark)
                 img = (
-                    apply_dark_flat(img, dark=dark, flat=flat)
-                    if (dark is not None or flat is not None)
+                    apply_dark_flat(img, dark=d_use, flat=flat)
+                    if (d_use is not None or flat is not None)
                     else img
                 )
-                img[hot_mask_static] = median_filter(img, size=3)[hot_mask_static]
+                # Apply persistent hot-pixel mask (per modality if available)
+                hm = hot_mask_by_mod.get(m, hot_mask_static)
+                if hm is not None:
+                    img[hm] = median_filter(img, size=3)[hm]
+
                 if str(args.hot_pixels).lower() in ("1", "true", "yes", "y"):
                     img = remove_hot_pixels(
                         img, ksize=args.median_ksize, thresh_sigma=args.outlier_sigma

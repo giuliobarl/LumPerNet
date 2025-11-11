@@ -40,12 +40,24 @@ def find_data_marker(lines: list[str]) -> int | None:
     return None
 
 
+def parse_sample_and_channel_from_jv(jv_path: Path) -> tuple[str, str, str]:
+    """
+    JV filenames look like: ..._Stability (Parameters)_{STACK}_{BATCH}-{CHANNEL}.txt
+    Example: 0000_2025-10-13_11.55.43_Stability (Parameters)_Felix_new-1A.txt
+    Returns (stack_id, sample_id, channel_from_name). If pattern fails, returns ("", "", "").
+    """
+    stem = jv_path.stem
+    if "_Stability (Parameters)_" in stem:
+        right = stem.split("_Stability (Parameters)_", 1)[1]
+        if "-" in right:
+            sample, ch = right.rsplit("-", 1)
+            if "_" in sample:
+                _, stack = sample.rsplit("_", 1)
+            return stack, sample, ch
+    return "", "", ""
+
+
 def parse_jv_file(jv_path: Path) -> pd.DataFrame:
-    import re
-
-    import numpy as np
-    import pandas as pd
-
     # Find the "## Data ##" line number
     lines = jv_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     data_idx = next(i for i, ln in enumerate(lines) if "## Data" in ln)
@@ -179,6 +191,11 @@ def build_manifest_for_channel(
     df_jv["channel"] = channel
     df_jv["jv_file"] = str(jv_file)
 
+    stack_id, sample_id, ch_from_name = parse_sample_and_channel_from_jv(jv_file)
+    # prefer directory 'channel' for the electrical channel, but keep what's in the filename for sanity checks
+    df_jv["sample_id"] = sample_id
+    df_jv["stack_id"] = stack_id
+
     # Scan images
     img_maps = scan_channel_images(proc_date_dir, channel, modalities)
 
@@ -188,6 +205,8 @@ def build_manifest_for_channel(
         t_idx = int(t_idx)
         entry = {
             "date": date,
+            "sample_id": row.get("sample_id", ""),
+            "stack_id": row.get("stack_id", ""),
             "channel": channel,
             "t_idx": t_idx,
             "t_hours": row.get("t_hours", np.nan),

@@ -124,12 +124,19 @@ def main():
     ap.add_argument(
         "--average",
         type=str,
-        default="false",
+        default="true",
         help="If true, also compute PCE_avg=(FW+RV)/2 and SOH_avg vs image reference.",
     )
     ap.add_argument("--include-deltas", type=str, default="false")
     ap.add_argument("--eps-scale", type=float, default=1e-6)
     ap.add_argument("--min-timepoints", type=int, default=3)
+    ap.add_argument(
+        "--stack-map",
+        type=str,
+        default=None,
+        help="Optional JSON/CSV mapping stack_id -> int code. If omitted, a map is auto-built from the manifest.",
+    )
+
     args = ap.parse_args()
 
     use_avg = str(args.average).lower() in ("1", "true", "yes", "y")
@@ -139,7 +146,32 @@ def main():
     man_path = Path(args.manifest)
     df = pd.read_csv(man_path)
 
+    # NaN-safe for paths (already suggested earlier)
+    for c in ("img_EL", "img_PL_oc", "img_PL_sc"):
+        if c in df.columns:
+            df[c] = df[c].where(df[c].notna(), "")
+
+    # Ensure stack fields exist; if not, create simple fallbacks
+    if "stack_id" not in df.columns:
+        df["stack_id"] = ""
+    if "sample_id" not in df.columns:
+        df["sample_id"] = ""
+
+    # Build or load stack_id -> int mapping
+    stack_map = {}
+    if args.stack_map:
+        sp = Path(args.stack_map)
+        if sp.suffix.lower() == ".json":
+            stack_map = json.loads(sp.read_text(encoding="utf-8"))
+        else:
+            m = pd.read_csv(sp)
+            stack_map = {str(r["stack_id"]): int(r["code"]) for _, r in m.iterrows()}
+
+    def stack_code_of(sid: str) -> int:
+        return stack_map.get(str(sid), -1)
+
     required_cols = [
+        "date",
         "channel",
         "t_idx",
         "t_hours",
@@ -153,7 +185,7 @@ def main():
     if missing:
         raise ValueError(f"Manifest missing columns: {missing}")
 
-    out_root = Path(args.out_root)
+    out_root = Path(args.out_root) / df["date"].iloc[0]
     (out_root / "cells").mkdir(parents=True, exist_ok=True)
 
     groups = df.groupby("channel")
@@ -178,6 +210,8 @@ def main():
             ]
             + (["dEL", "dPLoc", "dPLsc"] if include_deltas else [])
         ),
+        "stacks": list(stack_map.keys()),
+        "stack_map": stack_map,
         "compute_average": use_avg,
         "crop_hw": None,
         "from_manifest": str(man_path),
@@ -187,6 +221,11 @@ def main():
 
     for cell_id, g in groups:
         g = g.sort_values("t_idx").reset_index(drop=True)
+        # Per-cell identifiers (should be constant within group)
+        cell_sample_id = str(g["sample_id"].iloc[0]) if "sample_id" in g.columns else ""
+        cell_stack_id = str(g["stack_id"].iloc[0]) if "stack_id" in g.columns else ""
+        cell_stack_code = stack_code_of(cell_stack_id)
+
         ref_row = pick_reference_row(g)
         if ref_row is None:
             skipped += 1
@@ -258,6 +297,9 @@ def main():
         out_path = out_root / "cells" / f"{cell_id}.npz"
         np.savez_compressed(
             out_path,
+            sample_id=cell_sample_id,
+            stack_id=cell_stack_id,
+            stack_code=np.int32(cell_stack_code),
             x=X,
             t_idx=TIDX,
             # add these two when use_avg:
