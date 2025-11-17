@@ -92,7 +92,7 @@ def switch_tracking_open(api, ch) -> bool:
         print(f"[Channel {ch}] OC switch failed: {e}")
         return False
     time.sleep(0.03)
-    print(f"[Channel {ch}] Switched tracking algorithm to Open Circuit.")
+    print(f"[Channel {ch}] Switching tracking algorithm to Open Circuit.")
     return True
 
 
@@ -128,7 +128,7 @@ def switch_tracking_short(api, ch) -> bool:
         print(f"[Channel {ch}] SC switch failed: {e}")
         return False
     time.sleep(0.03)
-    print(f"[Channel {ch}] Switched tracking algorithm to Short Circuit.")
+    print(f"[Channel {ch}] Switching tracking algorithm to Short Circuit.")
     return True
 
 
@@ -150,7 +150,7 @@ def set_fixed_voltage(api, ch, voltage: float) -> bool:
         print(f"[Channel {ch}] Fixed-Voltage update failed: {e}")
         return False
     time.sleep(0.03)
-    print(f"[Channel {ch}] Fixed-Voltage set to {voltage:.3f} V.")
+    print(f"[Channel {ch}] Setting Fixed-Voltage to {voltage:.3f} V.")
     return True
 
 

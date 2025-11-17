@@ -124,6 +124,9 @@ class App(customtkinter.CTk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        self.date_root = self._date_root()
+        os.makedirs(self.date_root, exist_ok=True)
+
         # attribute initialization
         self.iter_time: int = 240
         self.JV_time: int = 30
@@ -1010,9 +1013,7 @@ class App(customtkinter.CTk):
             # ==== BLUE LED (PL) ====
             if int(self.PL_time) > 0:
                 self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
-                output_dir = (
-                    f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/PL"
-                )
+                output_dir = f"{str(self.base_dir)}/{self.res_name}/{self.date_root}/PL"
                 self.PL_path = output_dir
 
                 batch_name = (
@@ -1044,9 +1045,7 @@ class App(customtkinter.CTk):
             # ==== EL Bias (LEDs OFF) ====
             if int(self.EL_time) > 0:
                 self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
-                output_dir = (
-                    f"{str(self.base_dir)}/{self.res_name}/{self.current_date}/EL"
-                )
+                output_dir = f"{str(self.base_dir)}/{self.res_name}/{self.date_root}/EL"
                 self.EL_path = output_dir
 
                 batch_name = (
@@ -1155,9 +1154,6 @@ class App(customtkinter.CTk):
         - kind='dark' or 'flat'
         Saves as: <date>/<kind>_PLoc_<exp>ms.tiff and <kind>_PLsc_<exp>ms.tiffthor
         """
-        date_root = self._date_root()
-        os.makedirs(date_root, exist_ok=True)
-
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
 
@@ -1168,8 +1164,8 @@ class App(customtkinter.CTk):
                 GPIO.setup(self.GPIO_PIN_WHITE, GPIO.OUT)
                 if kind == "flat":
                     GPIO.output(self.GPIO_PIN_WHITE, GPIO.HIGH)
-                acquisition_PL(int(self.exp_time), name, date_root)
-                print(f"[{kind}] saved: {os.path.join(date_root, name + '.tiff')}")
+                acquisition_PL(int(self.exp_time), name, self.date_root)
+                print(f"[{kind}] saved: {os.path.join(self.date_root, name + '.tiff')}")
                 if kind == "flat":
                     GPIO.cleanup()
             except Exception as e:
@@ -1180,10 +1176,10 @@ class App(customtkinter.CTk):
             name = f"{kind}_{int(self.exp_time_sc)}ms"
             try:
                 GPIO.setup(self.GPIO_PIN_WHITE, GPIO.OUT)
-                acquisition_PL(int(self.exp_time_sc), name, date_root)
+                acquisition_PL(int(self.exp_time_sc), name, self.date_root)
                 if kind == "flat":
                     GPIO.output(self.GPIO_PIN_WHITE, GPIO.HIGH)
-                print(f"[{kind}] saved: {os.path.join(date_root, name + '.tiff')}")
+                print(f"[{kind}] saved: {os.path.join(self.date_root, name + '.tiff')}")
                 if kind == "flat":
                     GPIO.cleanup()
             except Exception as e:
