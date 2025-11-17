@@ -25,7 +25,7 @@ import faulthandler
 
 from arkeo_api import MeasurementAPI
 from camera import acquisition_PL
-from cycle_commands import log_event, run_EL, run_JV, run_PL
+from cycle_commands import run_EL, run_JV, run_PL
 
 faulthandler.enable(all_threads=True)
 
@@ -37,7 +37,6 @@ customtkinter.set_default_color_theme(
 )  # Themes: "blue" (standard), "green", "dark-blue"
 
 HEARTBEAT = "/tmp/degimage.heartbeat"
-LOG_ALL = False  # flip to True if you ever want every event
 
 
 def _hb(stop_event: threading.Event):
@@ -989,16 +988,15 @@ class App(customtkinter.CTk):
                     self.JV_time,
                     self.cycle_counter,
                     self.GPIO_PIN_WHITE,
-                    self.base_dir,
-                    self.res_name,
                     self.date_root,
+                    self.cycle_counter,
                 )
                 print(f"\n[{self.cycle_counter}] White LED OFF.")
 
             # ==== BLUE LED (PL) ====
             if int(self.PL_time) > 0:
                 self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
-                output_dir = f"{str(self.base_dir)}/{self.res_name}/{self.date_root}/PL"
+                output_dir = f"{self.date_root}/PL"
                 self.PL_path = output_dir
 
                 batch_name = (
@@ -1029,7 +1027,7 @@ class App(customtkinter.CTk):
             # ==== EL Bias (LEDs OFF) ====
             if int(self.EL_time) > 0:
                 self.current_date = datetime.datetime.now().date().strftime("%Y-%m-%d")
-                output_dir = f"{str(self.base_dir)}/{self.res_name}/{self.date_root}/EL"
+                output_dir = f"{self.date_root}/EL"
                 self.EL_path = output_dir
 
                 batch_name = (

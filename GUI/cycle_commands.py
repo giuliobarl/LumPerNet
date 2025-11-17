@@ -12,18 +12,17 @@ from tqdm import tqdm
 stopped_channels = set()
 _stop_strikes = {}  # ch -> int
 STOP_STRIKES_THRESHOLD = 3
+LOG_ALL = False  # flip to True if you ever want every event
 
 
 def _ctx_from_output_dir(output_dir):
     """
-    Infer (base_dir, res_name, date_root) from an output_dir like:
+    Infer date_root from an output_dir like:
     <base>/<res_name>/<YYYY-MM-DD>/<EL or PL[_sc]/PL_oc>
     """
     p = Path(output_dir)
-    date_root = p.parent.name  # YYYY-MM-DD
-    res_name = p.parent.parent.name  # project
-    base_dir = p.parent.parent.parent  # base
-    return base_dir, res_name, date_root
+    date_root = p.parent.name
+    return date_root
 
 
 def check_running(api, ch):
@@ -173,8 +172,6 @@ def run_JV(
     JV_time,
     n_iter,
     GPIO_PIN_WHITE,
-    base_dir,
-    res_name,
     date_root,
     cycle_counter,
 ):
@@ -203,8 +200,6 @@ def run_JV(
     if newly_blacklisted:
         for ch in newly_blacklisted:
             log_event(
-                base_dir=base_dir,
-                res_name=res_name,
                 date_root=date_root,
                 cycle_counter=cycle_counter,
                 image_type="BLACKLIST",
@@ -259,11 +254,9 @@ def run_PL(
             os.makedirs(output_dir_oc, exist_ok=True)
             acquisition_PL(int(exposure_time), batch_name, output_dir_oc)
             # LOG success (no-op unless you set log_all=True)
-            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir_oc)
+            date_root = _ctx_from_output_dir(output_dir_oc)
             ploc_path = Path(output_dir_oc) / f"{batch_name}.tiff"
             log_event(
-                base_dir=base_dir,
-                res_name=res_name,
                 date_root=date_root,
                 cycle_counter=datetime.datetime.now().strftime(
                     "%H:%M:%S"
@@ -277,10 +270,8 @@ def run_PL(
             print(
                 f"\n[Warning] Skipped PL_oc acquisition (reason: {e}). The cycle will continue."
             )
-            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir + "_oc")
+            date_root = _ctx_from_output_dir(output_dir + "_oc")
             log_event(
-                base_dir=base_dir,
-                res_name=res_name,
                 date_root=date_root,
                 cycle_counter="-",
                 image_type="PLoc",
@@ -290,10 +281,8 @@ def run_PL(
             )
     elif not oc_ok_all:
         print("[PL_oc] Skipped: API update failed on at least one channel.")
-        base_dir, res_name, date_root = _ctx_from_output_dir(output_dir + "_oc")
+        date_root = _ctx_from_output_dir(output_dir + "_oc")
         log_event(
-            base_dir=base_dir,
-            res_name=res_name,
             date_root=date_root,
             cycle_counter="-",
             image_type="PLoc",
@@ -326,11 +315,9 @@ def run_PL(
         try:
             os.makedirs(output_dir_sc, exist_ok=True)
             acquisition_PL(int(exposure_time_sc), batch_name, output_dir_sc)
-            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir_sc)
+            date_root = _ctx_from_output_dir(output_dir_sc)
             plsc_path = Path(output_dir_sc) / f"{batch_name}.tiff"
             log_event(
-                base_dir=base_dir,
-                res_name=res_name,
                 date_root=date_root,
                 cycle_counter="-",
                 image_type="PLsc",
@@ -342,10 +329,8 @@ def run_PL(
             print(
                 f"\n[Warning] Skipped PL_sc acquisition (reason: {e}). The cycle will continue."
             )
-            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir_sc)
+            date_root = _ctx_from_output_dir(output_dir_sc)
             log_event(
-                base_dir=base_dir,
-                res_name=res_name,
                 date_root=date_root,
                 cycle_counter="-",
                 image_type="PLsc",
@@ -355,10 +340,8 @@ def run_PL(
             )
     elif not sc_ok_all:
         print("[PL_sc] Skipped: API update failed on at least one channel.")
-        base_dir, res_name, date_root = _ctx_from_output_dir(output_dir + "_sc")
+        date_root = _ctx_from_output_dir(output_dir + "_sc")
         log_event(
-            base_dir=base_dir,
-            res_name=res_name,
             date_root=date_root,
             cycle_counter="-",
             image_type="PLsc",
@@ -410,11 +393,9 @@ def run_EL(
         try:
             os.makedirs(output_dir, exist_ok=True)
             acquisition_EL(int(exposure_time), batch_name, output_dir)
-            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir)
+            date_root = _ctx_from_output_dir(output_dir)
             el_path = Path(output_dir) / f"{batch_name}.tiff"
             log_event(
-                base_dir=base_dir,
-                res_name=res_name,
                 date_root=date_root,
                 cycle_counter="-",
                 image_type="EL",
@@ -426,10 +407,8 @@ def run_EL(
             print(
                 f"\n[Warning] Skipped EL acquisition (reason: {e}). The cycle will continue."
             )
-            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir)
+            date_root = _ctx_from_output_dir(output_dir)
             log_event(
-                base_dir=base_dir,
-                res_name=res_name,
                 date_root=date_root,
                 cycle_counter="-",
                 image_type="EL",
@@ -439,10 +418,8 @@ def run_EL(
             )
     elif not fv_ok_all:
         print("[EL] Skipped: API update failed on at least one channel.")
-        base_dir, res_name, date_root = _ctx_from_output_dir(output_dir)
+        date_root = _ctx_from_output_dir(output_dir)
         log_event(
-            base_dir=base_dir,
-            res_name=res_name,
             date_root=date_root,
             cycle_counter="-",
             image_type="EL",
@@ -474,8 +451,6 @@ def run_EL(
 
 def log_event(
     *,
-    base_dir,
-    res_name,
     date_root,
     cycle_counter,
     image_type,
@@ -497,6 +472,7 @@ def log_event(
     except Exception:
         fsize = 0
     try:
+        base_dir = date_root.parent.parent
         _, _, free = shutil.disk_usage(str(base_dir))
         free_mb = round(free / (1024 * 1024))
     except Exception:
@@ -504,7 +480,7 @@ def log_event(
 
     bl = sorted(stopped_channels) if isinstance(stopped_channels, set) else "-"
 
-    log_dir = Path(base_dir) / str(res_name) / str(date_root)
+    log_dir = Path(date_root)
     log_dir.mkdir(parents=True, exist_ok=True)
     line = (
         f"{ts} | cycle={cycle_counter} | step={image_type} | status={status}"
