@@ -1,9 +1,10 @@
+import datetime
 import json
 import os
-import threading
+import shutil
 import time
+from pathlib import Path
 
-from arkeo_api import MeasurementAPI
 from camera import acquisition_EL, acquisition_PL
 from RPi import GPIO
 from tqdm import tqdm
@@ -11,6 +12,18 @@ from tqdm import tqdm
 stopped_channels = set()
 _stop_strikes = {}  # ch -> int
 STOP_STRIKES_THRESHOLD = 3
+
+
+def _ctx_from_output_dir(output_dir):
+    """
+    Infer (base_dir, res_name, date_root) from an output_dir like:
+    <base>/<res_name>/<YYYY-MM-DD>/<EL or PL[_sc]/PL_oc>
+    """
+    p = Path(output_dir)
+    date_root = p.parent.name  # YYYY-MM-DD
+    res_name = p.parent.parent.name  # project
+    base_dir = p.parent.parent.parent  # base
+    return base_dir, res_name, date_root
 
 
 def check_running(api, ch):
@@ -74,7 +87,6 @@ def trigger_jv(api, ch, n_iter):
         print(f"[Channel {ch}] Error: {e}")
 
 
-# --- add/replace helpers at top of cycle_commands.py ---
 def switch_tracking_open(api, ch) -> bool:
     api.set_active_channel(ch)
     time.sleep(0.1)
@@ -155,7 +167,17 @@ def set_fixed_voltage(api, ch, voltage: float) -> bool:
 
 
 # ==== WHITE LED (JV) ====
-def run_JV(api, num_channels, JV_time, n_iter, GPIO_PIN_WHITE):
+def run_JV(
+    api,
+    num_channels,
+    JV_time,
+    n_iter,
+    GPIO_PIN_WHITE,
+    base_dir,
+    res_name,
+    date_root,
+    cycle_counter,
+):
     GPIO.output(GPIO_PIN_WHITE, GPIO.HIGH)
 
     for _ in tqdm(range(20), desc="Recovering under white light soaking..."):
@@ -171,8 +193,25 @@ def run_JV(api, num_channels, JV_time, n_iter, GPIO_PIN_WHITE):
     # stop white light soaking
     GPIO.output(GPIO_PIN_WHITE, GPIO.LOW)
 
+    # --- log newly blacklisted channels (diff-based) ---
+    prev_blacklisted = set(stopped_channels)  # snapshot before checks
+
     for ch in range(num_channels):
         check_running(api, ch)
+
+    newly_blacklisted = sorted(stopped_channels - prev_blacklisted)
+    if newly_blacklisted:
+        for ch in newly_blacklisted:
+            log_event(
+                base_dir=base_dir,
+                res_name=res_name,
+                date_root=date_root,
+                cycle_counter=cycle_counter,
+                image_type="BLACKLIST",
+                status="INFO",
+                reason=f"Channel {ch} blacklisted after JV",
+                stopped_channels=stopped_channels,
+            )
 
 
 # ==== BLUE LED (PL) ====
@@ -219,12 +258,49 @@ def run_PL(
         try:
             os.makedirs(output_dir_oc, exist_ok=True)
             acquisition_PL(int(exposure_time), batch_name, output_dir_oc)
+            # LOG success (no-op unless you set log_all=True)
+            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir_oc)
+            ploc_path = Path(output_dir_oc) / f"{batch_name}.tiff"
+            log_event(
+                base_dir=base_dir,
+                res_name=res_name,
+                date_root=date_root,
+                cycle_counter=datetime.datetime.now().strftime(
+                    "%H:%M:%S"
+                ),  # or pass your real self.cycle_counter in via args if you prefer
+                image_type="PLoc",
+                status="OK",
+                filepath=ploc_path,
+                stopped_channels=stopped_channels,
+            )
         except Exception as e:
             print(
                 f"\n[Warning] Skipped PL_oc acquisition (reason: {e}). The cycle will continue."
             )
+            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir + "_oc")
+            log_event(
+                base_dir=base_dir,
+                res_name=res_name,
+                date_root=date_root,
+                cycle_counter="-",
+                image_type="PLoc",
+                status="ERROR",
+                reason=str(e),
+                stopped_channels=stopped_channels,
+            )
     elif not oc_ok_all:
         print("[PL_oc] Skipped: API update failed on at least one channel.")
+        base_dir, res_name, date_root = _ctx_from_output_dir(output_dir + "_oc")
+        log_event(
+            base_dir=base_dir,
+            res_name=res_name,
+            date_root=date_root,
+            cycle_counter="-",
+            image_type="PLoc",
+            status="SKIPPED",
+            reason="API update failed on at least one channel",
+            stopped_channels=stopped_channels,
+        )
 
     # Switch to SC on all; if any fails → skip PL_sc image
     sc_ok_all = True
@@ -250,13 +326,46 @@ def run_PL(
         try:
             os.makedirs(output_dir_sc, exist_ok=True)
             acquisition_PL(int(exposure_time_sc), batch_name, output_dir_sc)
+            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir_sc)
+            plsc_path = Path(output_dir_sc) / f"{batch_name}.tiff"
+            log_event(
+                base_dir=base_dir,
+                res_name=res_name,
+                date_root=date_root,
+                cycle_counter="-",
+                image_type="PLsc",
+                status="OK",
+                filepath=plsc_path,
+                stopped_channels=stopped_channels,
+            )
         except Exception as e:
             print(
                 f"\n[Warning] Skipped PL_sc acquisition (reason: {e}). The cycle will continue."
             )
+            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir_sc)
+            log_event(
+                base_dir=base_dir,
+                res_name=res_name,
+                date_root=date_root,
+                cycle_counter="-",
+                image_type="PLsc",
+                status="ERROR",
+                reason=str(e),
+                stopped_channels=stopped_channels,
+            )
     elif not sc_ok_all:
         print("[PL_sc] Skipped: API update failed on at least one channel.")
-
+        base_dir, res_name, date_root = _ctx_from_output_dir(output_dir + "_sc")
+        log_event(
+            base_dir=base_dir,
+            res_name=res_name,
+            date_root=date_root,
+            cycle_counter="-",
+            image_type="PLsc",
+            status="SKIPPED",
+            reason="API update failed on at least one channel",
+            stopped_channels=stopped_channels,
+        )
     GPIO.output(GPIO_PIN_BLUE, GPIO.LOW)
 
 
@@ -301,12 +410,46 @@ def run_EL(
         try:
             os.makedirs(output_dir, exist_ok=True)
             acquisition_EL(int(exposure_time), batch_name, output_dir)
+            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir)
+            el_path = Path(output_dir) / f"{batch_name}.tiff"
+            log_event(
+                base_dir=base_dir,
+                res_name=res_name,
+                date_root=date_root,
+                cycle_counter="-",
+                image_type="EL",
+                status="OK",
+                filepath=el_path,
+                stopped_channels=stopped_channels,
+            )
         except Exception as e:
             print(
                 f"\n[Warning] Skipped EL acquisition (reason: {e}). The cycle will continue."
             )
+            base_dir, res_name, date_root = _ctx_from_output_dir(output_dir)
+            log_event(
+                base_dir=base_dir,
+                res_name=res_name,
+                date_root=date_root,
+                cycle_counter="-",
+                image_type="EL",
+                status="ERROR",
+                reason=str(e),
+                stopped_channels=stopped_channels,
+            )
     elif not fv_ok_all:
         print("[EL] Skipped: API update failed on at least one channel.")
+        base_dir, res_name, date_root = _ctx_from_output_dir(output_dir)
+        log_event(
+            base_dir=base_dir,
+            res_name=res_name,
+            date_root=date_root,
+            cycle_counter="-",
+            image_type="EL",
+            status="SKIPPED",
+            reason="API update failed on at least one channel",
+            stopped_channels=stopped_channels,
+        )
 
     for ch in range(num_channels):
         if ch in stopped_channels:
@@ -327,3 +470,49 @@ def run_EL(
             )
             # try again
             switch_tracking_open(api, ch)
+
+
+def log_event(
+    *,
+    base_dir,
+    res_name,
+    date_root,
+    cycle_counter,
+    image_type,
+    status="OK",
+    reason="",
+    filepath=None,
+    stopped_channels=None,
+    log_all=False,
+):
+    """Append a short line to <base>/<res>/<date>/acquisition_log.txt.
+    Writes only when status != OK (unless log_all=True)."""
+    if status == "OK" and not log_all:
+        return
+
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    fpath = Path(filepath) if filepath else None
+    try:
+        fsize = fpath.stat().st_size if fpath and fpath.exists() else 0
+    except Exception:
+        fsize = 0
+    try:
+        _, _, free = shutil.disk_usage(str(base_dir))
+        free_mb = round(free / (1024 * 1024))
+    except Exception:
+        free_mb = -1
+
+    bl = sorted(stopped_channels) if isinstance(stopped_channels, set) else "-"
+
+    log_dir = Path(base_dir) / str(res_name) / str(date_root)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    line = (
+        f"{ts} | cycle={cycle_counter} | step={image_type} | status={status}"
+        f" | reason={reason or '-'} | file={fpath if fpath else '-'}"
+        f" | bytes={fsize} | freeMB={free_mb} | blacklisted={bl}\n"
+    )
+    try:
+        with open(log_dir / "acquisition_log.txt", "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass

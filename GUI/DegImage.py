@@ -6,10 +6,9 @@ import sys
 import threading
 import time
 from pathlib import Path
-from tkinter import END, Scrollbar, Text
+from tkinter import Scrollbar, Text
 
 import customtkinter
-import numpy as np
 from PIL import Image
 from RPi import GPIO
 from tqdm import tqdm
@@ -26,7 +25,7 @@ import faulthandler
 
 from arkeo_api import MeasurementAPI
 from camera import acquisition_PL
-from cycle_commands import run_EL, run_JV, run_PL
+from cycle_commands import log_event, run_EL, run_JV, run_PL
 
 faulthandler.enable(all_threads=True)
 
@@ -38,6 +37,7 @@ customtkinter.set_default_color_theme(
 )  # Themes: "blue" (standard), "green", "dark-blue"
 
 HEARTBEAT = "/tmp/degimage.heartbeat"
+LOG_ALL = False  # flip to True if you ever want every event
 
 
 def _hb(stop_event: threading.Event):
@@ -124,15 +124,12 @@ class App(customtkinter.CTk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self.date_root = self._date_root()
-        os.makedirs(self.date_root, exist_ok=True)
-
         # attribute initialization
         self.iter_time: int = 240
         self.JV_time: int = 30
         self.PL_time: int = 10
         self.EL_time: int = 10
-        self.EL_voltage: float = 1.4
+        self.EL_voltage: float = 1.5
         self.t_recover: int = 60
         self.t_relax: int = 15
         self.exp_time: int = 1000
@@ -933,23 +930,6 @@ class App(customtkinter.CTk):
         )
         summary_label.grid(row=0, column=0, padx=20, pady=(20, 10))
 
-    def log_metadata(self, image_type):
-        log_filename = "acquisition_log.txt"
-
-        # Get current time
-        self.current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # Prepare metadata
-        if image_type in ["PL", "pl"]:
-            log_entry = f"{self.current_time} - {image_type} Image: {self.res_name}, Cell {self.batch_name}, Soaking: {self.PL_time} s, Exposure (OC): {self.exp_time} ms, Exposure (SC): {self.exp_time_sc} ms \n"
-        else:
-            log_entry = f"{self.current_time} - {image_type} Image: {self.res_name}, Cell {self.batch_name}, Biasing: {self.EL_time} s, Exposure: {self.exp_time} ms \n"
-
-        with open(
-            self.base_dir / self.res_name / self.current_date / log_filename, "a"
-        ) as log_file:
-            log_file.write(log_entry)
-
     def process_run(self, acquire: bool = True):
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
@@ -962,6 +942,8 @@ class App(customtkinter.CTk):
         self.ensure_api_connection()
 
         if self.cycle_counter == 0:
+            self.date_root = self._date_root()
+            os.makedirs(self.date_root, exist_ok=True)
             for channel_id in range(self.active_channels):
                 print(f"[Channel {channel_id}] Setting active channel")
                 self.api.set_active_channel(channel_id)
@@ -1007,6 +989,9 @@ class App(customtkinter.CTk):
                     self.JV_time,
                     self.cycle_counter,
                     self.GPIO_PIN_WHITE,
+                    self.base_dir,
+                    self.res_name,
+                    self.date_root,
                 )
                 print(f"\n[{self.cycle_counter}] White LED OFF.")
 
@@ -1036,7 +1021,6 @@ class App(customtkinter.CTk):
                         self.USE_CAMERA,
                         self.GPIO_PIN_BLUE,
                     )
-                    self.log_metadata(image_type="PL")
                 except Exception as e:
                     print(f"\n[{self.cycle_counter}]: {e}")
 
@@ -1067,7 +1051,6 @@ class App(customtkinter.CTk):
                         self.USE_CAMERA,
                         self.EL_voltage,
                     )
-                    self.log_metadata(image_type="EL")
                 except Exception as e:
                     print(f"\n[{self.cycle_counter}]: {e}")
 
@@ -1086,7 +1069,7 @@ class App(customtkinter.CTk):
 
         initial_start = time.time()
         try:
-            while self.cycle_running and self.cycle_counter < self.max_iter:
+            while self.cycle_running and self.cycle_counter < self.max_iter + 1:
                 scheduled_start = initial_start + self.cycle_counter * self.iter_time
                 now = time.time()
 
@@ -1122,7 +1105,7 @@ class App(customtkinter.CTk):
                     self.api.stop_channel()
                 self.api.disconnect()
                 self.update_gui(
-                    f"Cycle stopped: reached max iterations ({self.max_iter})."
+                    f"Cycle stopped: reached max iterations ({self.max_iter}+1)."
                 )
 
         finally:
@@ -1138,7 +1121,7 @@ class App(customtkinter.CTk):
         # Acquire more often early, then gradually spread out
         step = 1
         i = 0
-        while i <= max_iter:
+        while i <= max_iter + 1:
             self.decreasing_schedule.add(i)
             if i < 100:
                 step = 1
@@ -1154,6 +1137,8 @@ class App(customtkinter.CTk):
         - kind='dark' or 'flat'
         Saves as: <date>/<kind>_PLoc_<exp>ms.tiff and <kind>_PLsc_<exp>ms.tiffthor
         """
+        self.date_root = self._date_root()
+        os.makedirs(self.date_root, exist_ok=True)
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
 
