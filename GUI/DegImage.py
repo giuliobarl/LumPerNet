@@ -814,6 +814,8 @@ class App(customtkinter.CTk):
         else:
             print(f"Maximum number of iterations: {max_iter}")
             self.max_iter = int(max_iter)
+            if self.sampling_strategy == "decreasing":
+                self.generate_schedule()
 
     # command line function
 
@@ -829,7 +831,8 @@ class App(customtkinter.CTk):
 
         elif user_input == "run":
             total_time = (
-                self.JV_time
+                20
+                + self.JV_time
                 + self.t_recover
                 + self.PL_time * 2
                 + self.t_relax
@@ -850,7 +853,8 @@ class App(customtkinter.CTk):
 
         elif user_input == "cycle":
             total_time = (
-                self.JV_time
+                20
+                + self.JV_time
                 + self.t_recover
                 + self.PL_time * 2
                 + self.t_relax
@@ -909,7 +913,7 @@ class App(customtkinter.CTk):
         summary_label = customtkinter.CTkLabel(
             summary_window,
             text="Settings summary. \n"
-            + f"- Maximum number of iterations: {int(self.max_iter)}"
+            + f"- Maximum number of iterations: {int(self.max_iter)} \n"
             + f"- Interval between iterations: {str(self.iter_time)} s \n"
             + f"- Number of active channels: {str(self.active_channels)} \n"
             + f"- White LED's ON time: {str(self.JV_time)} s \n"
@@ -965,13 +969,14 @@ class App(customtkinter.CTk):
                 data["Device"] = str(self.batch_name)
                 data["Channel"]["Inverted"] = self.cell_inverted
                 data["Tracking"]["Algorithm"] = "Open circuit"
-                # data["Tracking"]["ConstantOutput"] = float(self.EL_voltage)
+                # data["Tracking"]["Algorithm"] = "Fixed Current"
+                data["Tracking"]["ConstantOutput"] = float(0.0)
                 data["Tracking"]["jvInterval"] = {
                     "Value": self.iter_time,
                     "Unit": "sec",
                 }
                 data["Tracking"]["TestDuration"] = {
-                    "Value": self.max_iter * self.iter_time,
+                    "Value": (self.max_iter + 1) * self.iter_time,
                     "Unit": "sec",
                 }
                 data["Cell"]["Area (cm2)"] = float(self.cell_area)
@@ -986,6 +991,7 @@ class App(customtkinter.CTk):
                     self.api,
                     self.active_channels,
                     self.JV_time,
+                    self.t_recover,
                     self.cycle_counter,
                     self.GPIO_PIN_WHITE,
                     self.date_root,
@@ -999,18 +1005,14 @@ class App(customtkinter.CTk):
                 output_dir = f"{self.date_root}/PL"
                 self.PL_path = output_dir
 
-                batch_name = (
-                    f"{self.batch_name}_{self.cycle_counter}"
-                    if self.cycle_running
-                    else self.batch_name
-                )
+                batch_name = f"{self.batch_name}_{self.cycle_counter}"
 
                 try:
                     run_PL(
                         self.api,
                         self.active_channels,
-                        self.t_recover,
                         self.PL_time,
+                        self.t_relax,
                         self.exp_time,
                         self.exp_time_sc,
                         self.PL_path,
@@ -1030,17 +1032,12 @@ class App(customtkinter.CTk):
                 output_dir = f"{self.date_root}/EL"
                 self.EL_path = output_dir
 
-                batch_name = (
-                    f"{self.batch_name}_{self.cycle_counter}"
-                    if self.cycle_running
-                    else self.batch_name
-                )
+                batch_name = f"{self.batch_name}_{self.cycle_counter}"
 
                 try:
                     run_EL(
                         self.api,
                         self.active_channels,
-                        self.t_relax,
                         self.EL_time,
                         self.exp_time,
                         self.EL_path,
@@ -1091,7 +1088,7 @@ class App(customtkinter.CTk):
 
                 self.cycle_counter += 1
 
-            if self.cycle_counter < self.max_iter:
+            if self.cycle_counter < self.max_iter + 1:
                 for ch in range(self.active_channels):
                     self.api.set_active_channel(ch)
                     self.api.stop_channel()
@@ -1156,7 +1153,7 @@ class App(customtkinter.CTk):
 
         # uses self.exp_time_sc
         if int(self.exp_time_sc) > 0:
-            name = f"{kind}_{int(self.exp_time_sc)}ms"
+            name = f"{batch}_{kind}_{int(self.exp_time_sc)}ms"
             try:
                 GPIO.setup(self.GPIO_PIN_WHITE, GPIO.OUT)
                 acquisition_PL(int(self.exp_time_sc), name, self.date_root)

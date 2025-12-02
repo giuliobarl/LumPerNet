@@ -67,7 +67,7 @@ def acquisition_PL(exposure_time, batch_name, output_dir):
                     "Timeout was reached while polling for a frame, program will now exit"
                 )
 
-            print(f"Acquired frame {batch_name}")
+            print(f"\nAcquired frame {batch_name}\n")
 
             image_data = frame.image_buffer
 
@@ -132,7 +132,7 @@ def acquisition_EL(exposure_time, batch_name, output_dir):
                     "Timeout was reached while polling for a frame, program will now exit"
                 )
 
-            print(f"Acquired frame {batch_name}")
+            print(f"\nAcquired frame {batch_name}\n")
 
             image_data = frame.image_buffer
 

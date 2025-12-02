@@ -143,6 +143,45 @@ def switch_tracking_short(api, ch) -> bool:
     return True
 
 
+def set_fixed_current(api, ch) -> bool:
+    api.set_active_channel(ch)
+    time.sleep(0.1)
+    data = _get_settings_json(api)
+    if not data:
+        print(f"[Channel {ch}] API offline; cannot set Fixed Current.")
+        return False
+    data["Tracking"]["Algorithm"] = "Fixed Current"
+    data["Tracking"]["ConstantOutput"] = float(0.0)
+    try:
+        r = api.set_channel_settings(json.dumps(data))
+        if not r:
+            print(f"[Channel {ch}] set_channel_settings returned empty/None (OC).")
+            return False
+    except Exception as e:
+        print(f"[Channel {ch}] Fixed-Current update failed: {e}")
+        return False
+    time.sleep(0.03)
+    print(f"[Channel {ch}] Setting Fixed-Current to 0.0 A.")
+    return True
+
+
+def check_fixed_current(api, ch) -> bool:
+    api.set_active_channel(ch)
+    time.sleep(0.1)
+    data = _get_settings_json(api)
+    if not data:
+        print(f"[Channel {ch}] API offline; cannot check tracking algorithm.")
+        return False
+    if data["Tracking"]["Algorithm"] == "Fixed Current" and data["Tracking"][
+        "ConstantOutput"
+    ] == float(0.0):
+        return True
+    else:
+        time.sleep(0.03)
+        print(f"[Channel {ch}] has not switched to Open Circuit.")
+        return False
+
+
 def set_fixed_voltage(api, ch, voltage: float) -> bool:
     api.set_active_channel(ch)
     time.sleep(0.1)
@@ -170,6 +209,7 @@ def run_JV(
     api,
     num_channels,
     JV_time,
+    t_recover,
     n_iter,
     GPIO_PIN_WHITE,
     date_root,
@@ -208,13 +248,18 @@ def run_JV(
                 stopped_channels=stopped_channels,
             )
 
+    for _ in tqdm(
+        range(int(t_recover)), desc="Recovering at OC after white light soaking"
+    ):
+        time.sleep(1)
+
 
 # ==== BLUE LED (PL) ====
 def run_PL(
     api,
     num_channels,
-    t_recover,
     PL_time,
+    t_relax,
     exposure_time,
     exposure_time_sc,
     output_dir,
@@ -237,11 +282,6 @@ def run_PL(
             time.sleep(0.1)
             api.stop_channel()
             print(f"[Channel {ch}] forced to stop (blacklisted)")
-
-    for _ in tqdm(
-        range(int(t_recover)), desc="Recovering at OC after white light soaking"
-    ):
-        time.sleep(1)
 
     GPIO.output(GPIO_PIN_BLUE, GPIO.HIGH)
     for _ in tqdm(range(int(PL_time)), desc="Blue light soaking (OC)..."):
@@ -351,12 +391,16 @@ def run_PL(
         )
     GPIO.output(GPIO_PIN_BLUE, GPIO.LOW)
 
+    for _ in tqdm(
+        range(int(t_relax)), desc="Recovering at SC after blue light soaking"
+    ):
+        time.sleep(1)
+
 
 # ==== EL Bias (LEDs OFF) ====
 def run_EL(
     api,
     num_channels,
-    t_relax,
     EL_time,
     exposure_time,
     output_dir,
@@ -365,12 +409,6 @@ def run_EL(
     USE_CAMERA,
     el_voltage,
 ):
-
-    for _ in tqdm(
-        range(int(t_relax)), desc="Recovering at SC after blue light soaking"
-    ):
-        time.sleep(1)
-
     # All channels must accept Fixed-Voltage update to acquire EL image
     fv_ok_all = True
     for ch in range(num_channels):
@@ -447,6 +485,14 @@ def run_EL(
             )
             # try again
             switch_tracking_open(api, ch)
+
+    # Force-stop blacklisted (unchanged)
+    for ch in range(num_channels):
+        if ch in stopped_channels:
+            api.set_active_channel(ch)
+            time.sleep(0.1)
+            api.stop_channel()
+            print(f"[Channel {ch}] forced to stop (blacklisted)")
 
 
 def log_event(
