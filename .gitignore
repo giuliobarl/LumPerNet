@@ -171,7 +171,8 @@ cython_debug/
 .pypirc
 
 # Data folders
-data/*
+data/
+data_old/
 
 # Figures folders
 figures*
@@ -185,6 +186,9 @@ videos*
 # temp notebooks and old codes
 _old_codes/*
 *temp*
+
+# files under development
+train_classifier.py
 
 # outputs from tests
 runs/

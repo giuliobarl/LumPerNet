@@ -9,7 +9,8 @@ from pathlib import Path
 from tkinter import Scrollbar, Text
 
 import customtkinter
-from PIL import Image
+import numpy as np
+from PIL import Image, ImageOps
 from RPi import GPIO
 from tqdm import tqdm
 
@@ -133,7 +134,7 @@ class App(customtkinter.CTk):
         self.t_relax: int = 15
         self.exp_time: int = 1000
         self.exp_time_sc: int = 2000
-        self.active_channels: int = 16
+        self.active_channels: int = 32
         self.cell_area: float = 0.16
         self.cell_inverted: bool = False
         self.batch_name: str = "batch"
@@ -829,6 +830,9 @@ class App(customtkinter.CTk):
         elif user_input == "dark":
             self.cmd_dark()
 
+        elif user_input == "test":
+            self.cmd_test()
+
         elif user_input == "run":
             total_time = (
                 20
@@ -1184,14 +1188,84 @@ class App(customtkinter.CTk):
         print("[flat] Acquiring flat-field references...")
         self._acquire_reference_series("flat", self.batch_name)
 
-    # Functions to handle Arkeo API
-    def ensure_api_connection(self):
-        if not self.api.connection:
-            try:
-                self.api.connect()
-                print("API connected successfully.")
-            except Exception as e:
-                print(f"Failed to connect to API: {e}")
+    # --- preview helpers ---
+    def _rescale_for_preview(pil_img, clip_percent=2.0):
+        """
+        Contrast-stretch a possibly 16-bit image into an 8-bit preview.
+        clip_percent is per-tail (e.g., 1.0 = clip 1% low & 1% high).
+        """
+        arr = np.array(pil_img)
+        # handle 16-bit or 32-bit grayscale
+        if arr.ndim == 2:
+            lo = np.percentile(arr, clip_percent)
+            hi = np.percentile(arr, 100.0 - clip_percent)
+            if hi <= lo:  # degenerate image
+                hi, lo = arr.max(), arr.min()
+            arr = np.clip((arr - lo) / (hi - lo + 1e-12), 0, 1) * 255.0
+            arr8 = arr.astype(np.uint8)
+            out = Image.fromarray(arr8, mode="L")
+            return ImageOps.autocontrast(out)  # final gentle autocontrast
+        else:
+            # already RGB(A): just autocontrast lightly
+            return ImageOps.autocontrast(pil_img)
+
+    def _show_popup_image(parent, pil_img, title="Preview"):
+        """Show a PIL image in a modal CTkToplevel."""
+        popup = customtkinter.CTkToplevel(parent)
+        popup.title(title)
+        popup.geometry("900x700")
+        popup.transient(parent)
+        popup.grab_set()
+        # fit image into window keeping aspect
+        w, h = pil_img.size
+        max_w, max_h = 860, 620
+        scale = min(max_w / w, max_h / h, 1.0)
+        if scale < 1.0:
+            pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.BILINEAR)
+        ctk_img = customtkinter.CTkImage(
+            light_image=pil_img, dark_image=pil_img, size=pil_img.size
+        )
+        lbl = customtkinter.CTkLabel(popup, text="", image=ctk_img)
+        lbl.image = ctk_img  # keep ref
+        lbl.pack(expand=True, fill="both", padx=10, pady=10)
+
+    def cmd_test(self):
+        """
+        Acquire one image with current exposure without turning any LEDs on,
+        rescale for visibility, and show it in a popup window.
+        The frame is written to /tmp then loaded for preview.
+        """
+        if not self.USE_CAMERA:
+            print("[test] Camera disabled; skipped.")
+            return
+        if int(self.exp_time) <= 0:
+            print("[test] Exposure time is 0 ms; nothing to acquire.")
+            return
+
+        try:
+            # unique temp name (avoid collisions)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            name = f"__test_{ts}_{int(self.exp_time)}ms"
+            out_dir = "/tmp"
+
+            print(f"[test] Capturing one frame (exp={self.exp_time} ms) …")
+            acquisition_PL(int(self.exp_time), name, out_dir)  # no LEDs toggled
+            tif_path = Path(out_dir) / f"{name}.tiff"
+
+            if not tif_path.exists():
+                print(f"[test] Capture did not produce a file at {tif_path}")
+                return
+
+            # load, rescale, and preview
+            pil_img = Image.open(tif_path)
+            preview = self._rescale_for_preview(pil_img, clip_percent=2.0)
+            self._show_popup_image(self, preview, title=f"Preview: {name}")
+
+            # optional: tell user where file lives
+            print(f"[test] Saved raw image: {tif_path}")
+
+        except Exception as e:
+            print(f"[test] Failed: {e}")
 
     # Function to ensure workers stop
     def _on_close(self):
@@ -1211,6 +1285,16 @@ class App(customtkinter.CTk):
         except Exception:
             pass
         self.destroy()
+
+        # Functions to handle Arkeo API
+
+    def ensure_api_connection(self):
+        if not self.api.connection:
+            try:
+                self.api.connect()
+                print("API connected successfully.")
+            except Exception as e:
+                print(f"Failed to connect to API: {e}")
 
 
 ################################ main ################################

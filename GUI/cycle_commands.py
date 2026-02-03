@@ -486,14 +486,6 @@ def run_EL(
             # try again
             switch_tracking_open(api, ch)
 
-    # Force-stop blacklisted (unchanged)
-    for ch in range(num_channels):
-        if ch in stopped_channels:
-            api.set_active_channel(ch)
-            time.sleep(0.1)
-            api.stop_channel()
-            print(f"[Channel {ch}] forced to stop (blacklisted)")
-
 
 def log_event(
     *,
