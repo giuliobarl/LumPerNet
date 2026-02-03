@@ -19,8 +19,8 @@ Usage (interactive ROI selection then batch crop):
       --images-root /path/to/experiment_root \
       --modalities EL PLoc PLsc \
       --output-root /path/to/output_crops \
-      --crop-size 56 \
-      --rows 4 --cols 4 \
+      --crop-size 80 \
+      --rows 4 --cols 8 \
       --preset chose4x4 \
       --hot-pixels true \
       --dark-frame /path/to/dark_frame.tif \
@@ -28,7 +28,7 @@ Usage (interactive ROI selection then batch crop):
 
 If you already have ROI centers (csv), you can skip the interactive step:
   python roi_cropping_pipeline.py --ref-image ... --images-root ... --modalities ... \
-      --roi-csv /path/to/roi_centers.csv --output-root ... --preset chose4x4
+      --roi-csv /path/to/roi_centers.csv --output-root ... --preset chose4x8
 
 roi_centers.csv format:
   roi_id, cx, cy
@@ -89,39 +89,40 @@ def parse_grid_names(grid_names_str: str | None, preset: str | None, n: int | No
     """
     names = None
     if preset:
-        if preset.lower() == "chose4x4":
+        if preset.lower() == "chose4x8":
             names = [
-                "2B",
-                "2C",
-                "1C",
+                "5B",
+                "5A",
+                "8C",
+                "8D",
                 "1B",
-                "2A",
-                "2D",
-                "1D",
                 "1A",
-                "3B",
-                "3C",
-                "4B",
                 "4C",
-                "3A",
-                "3D",
-                "4A",
                 "4D",
-            ]
-        elif preset.lower() == "chose3x4":
-            names = [
-                "2B",
-                "2C",
+                "5C",
+                "5D",
+                "8B",
+                "8A",
                 "1C",
-                "1B",
-                "2A",
-                "2D",
                 "1D",
-                "1A",
-                "3B",
+                "4B",
+                "4A",
+                "6B",
+                "6A",
+                "7C",
+                "7D",
+                "2B",
+                "2A",
                 "3C",
-                "3A",
                 "3D",
+                "6C",
+                "6D",
+                "7B",
+                "7A",
+                "2C",
+                "2D",
+                "3B",
+                "3A",
             ]
         else:
             print(f"WARNING: Unknown preset '{preset}', ignoring.")

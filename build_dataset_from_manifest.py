@@ -121,12 +121,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", type=str, required=True)
     ap.add_argument("--out-root", type=str, required=True)
-    ap.add_argument(
-        "--average",
-        type=str,
-        default="true",
-        help="If true, also compute PCE_avg=(FW+RV)/2 and SOH_avg vs image reference.",
-    )
     ap.add_argument("--include-deltas", type=str, default="false")
     ap.add_argument("--eps-scale", type=float, default=1e-6)
     ap.add_argument("--min-timepoints", type=int, default=3)
@@ -139,7 +133,6 @@ def main():
 
     args = ap.parse_args()
 
-    use_avg = str(args.average).lower() in ("1", "true", "yes", "y")
     include_deltas = str(args.include_deltas).lower() in ("1", "true", "yes", "y")
     C = 9 + (3 if include_deltas else 0)
 
@@ -177,6 +170,12 @@ def main():
         "t_hours",
         "pce_fw",
         "pce_rv",
+        "voc_fw",
+        "voc_rv",
+        "jsc_fw",
+        "jsc_rv",
+        "ff_fw",
+        "ff_rv",
         "img_EL",
         "img_PL_oc",
         "img_PL_sc",
@@ -212,7 +211,6 @@ def main():
         ),
         "stacks": list(stack_map.keys()),
         "stack_map": stack_map,
-        "compute_average": use_avg,
         "crop_hw": None,
         "from_manifest": str(man_path),
         "eps_scale": args.eps_scale,
@@ -250,6 +248,12 @@ def main():
         p_fw = []
         p_rv = []
         pmask = []
+        v_fw = []
+        v_rv = []
+        j_fw = []
+        j_rv = []
+        f_fw = []
+        f_rv = []
         for _, row in g.iterrows():
             stack, ok = build_stack_for_row(row, refs, args.eps_scale, include_deltas)
             if not ok:
@@ -259,6 +263,12 @@ def main():
             p_fw.append(float(row["pce_fw"]) if pd.notnull(row["pce_fw"]) else np.nan)
             p_rv.append(float(row["pce_rv"]) if pd.notnull(row["pce_rv"]) else np.nan)
             pmask.append([True] * C)
+            v_fw.append(float(row["voc_fw"]) if pd.notnull(row["voc_fw"]) else np.nan)
+            v_rv.append(float(row["voc_rv"]) if pd.notnull(row["voc_rv"]) else np.nan)
+            j_fw.append(float(row["jsc_fw"]) if pd.notnull(row["jsc_fw"]) else np.nan)
+            j_rv.append(float(row["jsc_rv"]) if pd.notnull(row["jsc_rv"]) else np.nan)
+            f_fw.append(float(row["ff_fw"]) if pd.notnull(row["ff_fw"]) else np.nan)
+            f_rv.append(float(row["ff_rv"]) if pd.notnull(row["ff_rv"]) else np.nan)
 
         if len(stacks) < args.min_timepoints:
             skipped += 1
@@ -269,30 +279,52 @@ def main():
         TIDX = np.array(t_idx, dtype=np.int32)
         PFW = np.array(p_fw, dtype=np.float32)
         PRV = np.array(p_rv, dtype=np.float32)
+        VFW = np.array(v_fw, dtype=np.float32)
+        VRV = np.array(v_rv, dtype=np.float32)
+        JFW = np.array(j_fw, dtype=np.float32)
+        JRV = np.array(j_rv, dtype=np.float32)
+        FFW = np.array(f_fw, dtype=np.float32)
+        FRV = np.array(f_rv, dtype=np.float32)
 
-        ref_p_fw = PFW[0] if np.isfinite(PFW[0]) else np.nan
-        ref_p_rv = PRV[0] if np.isfinite(PRV[0]) else np.nan
+        # SoH (PCE retention) evaluation
+        PAVG = (PFW + PRV) / 2.0
+        ref_p_avg = PAVG[0] if np.isfinite(PAVG[0]) else np.nan
         with np.errstate(divide="ignore", invalid="ignore"):
-            SOH_FW = (
-                PFW / ref_p_fw
-                if np.isfinite(ref_p_fw) and ref_p_fw != 0
-                else np.full_like(PFW, np.nan)
-            )
-            SOH_RV = (
-                PRV / ref_p_rv
-                if np.isfinite(ref_p_rv) and ref_p_rv != 0
-                else np.full_like(PRV, np.nan)
+            SOH_AVG = (
+                PAVG / ref_p_avg
+                if np.isfinite(ref_p_avg) and ref_p_avg != 0
+                else np.full_like(PAVG, np.nan)
             )
 
-        if use_avg:
-            PAVG = (PFW + PRV) / 2.0
-            ref_p_avg = PAVG[0] if np.isfinite(PAVG[0]) else np.nan
-            with np.errstate(divide="ignore", invalid="ignore"):
-                SOH_AVG = (
-                    PAVG / ref_p_avg
-                    if np.isfinite(ref_p_avg) and ref_p_avg != 0
-                    else np.full_like(PAVG, np.nan)
-                )
+        # Voc retention evaluation
+        VAVG = (VFW + VRV) / 2.0
+        ref_v_avg = VAVG[0] if np.isfinite(VAVG[0]) else np.nan
+        with np.errstate(divide="ignore", invalid="ignore"):
+            VOC_RET = (
+                VAVG / ref_v_avg
+                if np.isfinite(ref_v_avg) and ref_v_avg != 0
+                else np.full_like(VAVG, np.nan)
+            )
+
+        # Jsc retention evaluation
+        JAVG = (JFW + JRV) / 2.0
+        ref_j_avg = JAVG[0] if np.isfinite(JAVG[0]) else np.nan
+        with np.errstate(divide="ignore", invalid="ignore"):
+            JSC_RET = (
+                JAVG / ref_j_avg
+                if np.isfinite(ref_j_avg) and ref_j_avg != 0
+                else np.full_like(JAVG, np.nan)
+            )
+
+        # FF retention evaluation
+        FAVG = (FFW + FRV) / 2.0
+        ref_f_avg = FAVG[0] if np.isfinite(FAVG[0]) else np.nan
+        with np.errstate(divide="ignore", invalid="ignore"):
+            FF_RET = (
+                FAVG / ref_f_avg
+                if np.isfinite(ref_f_avg) and ref_f_avg != 0
+                else np.full_like(FAVG, np.nan)
+            )
 
         out_path = out_root / "cells" / f"{cell_id}.npz"
         np.savez_compressed(
@@ -302,12 +334,11 @@ def main():
             stack_code=np.int32(cell_stack_code),
             x=X,
             t_idx=TIDX,
-            # add these two when use_avg:
-            **({"pce_avg": PAVG, "soh_avg": SOH_AVG} if use_avg else {}),
-            pce_fw=PFW,
-            pce_rv=PRV,
-            soh_fw=SOH_FW,
-            soh_rv=SOH_RV,
+            pce_avg=PAVG,
+            soh_avg=SOH_AVG,
+            voc_ret=VOC_RET,
+            jsc_ret=JSC_RET,
+            ff_ret=FF_RET,
             ref_t_idx=int(t_idx[0]),
             present_mask=np.array(pmask, dtype=bool),
         )
