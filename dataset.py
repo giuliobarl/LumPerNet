@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
+
 # ----------------- Utils -----------------
 def set_seed(seed: int):
     """Keeps runs reproducible for a given --seed."""
@@ -66,7 +67,7 @@ class PerovCellTimepoints(Dataset):
         augment=True,
         soh_max: float | None = None,
         soh_min: float | None = None,
-        drop_t0: bool = False
+        drop_t0: bool = False,
     ):
         self.items = []
         self.cells = []
@@ -108,10 +109,14 @@ class PerovCellTimepoints(Dataset):
             )
 
             for ti in range(T):
-                if drop_t0 and ti==0:
+                if drop_t0 and ti == 0:
                     continue
                 # ci indexes the cell, ti indexes the timepoint inside that cell
-                if self.soh_max is not None and self.soh_min is not None and "soh_avg" in targets:
+                if (
+                    self.soh_max is not None
+                    and self.soh_min is not None
+                    and "soh_avg" in targets
+                ):
                     v = targets["soh_avg"][ti]
                     if np.isfinite(v) and v >= self.soh_max or v < self.soh_min:
                         continue

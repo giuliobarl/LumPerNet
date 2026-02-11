@@ -124,6 +124,25 @@ def parse_grid_names(grid_names_str: str | None, preset: str | None, n: int | No
                 "3B",
                 "3A",
             ]
+        elif preset.lower() == "chose4x4":
+            names = [
+                "5B",
+                "5A",
+                "8C",
+                "8D",
+                "5C",
+                "5D",
+                "8B",
+                "8A",
+                "6B",
+                "6A",
+                "7C",
+                "7D",
+                "6C",
+                "6D",
+                "7B",
+                "7A",
+            ]
         else:
             print(f"WARNING: Unknown preset '{preset}', ignoring.")
     if grid_names_str:

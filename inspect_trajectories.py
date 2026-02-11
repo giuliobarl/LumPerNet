@@ -9,21 +9,19 @@ This script:
 """
 
 import argparse
-from pathlib import Path
 import json
-import numpy as np
 import random
+from pathlib import Path
+
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from dataset import (
-    load_metas_check_channels,
-    list_all_cells,
-    PerovCellTimepoints,
-)
-from model import SoHNet
-from utils_data import stratified_cell_split
+from dataset import PerovCellTimepoints, list_all_cells, load_metas_check_channels
+from models import SoHNet
+from utils_data import stratified_cell_split, stratified_kfold_cells
 from utils_plot import plot_representative_cells
+
 
 # ----------------- Utils -----------------
 def set_seed(seed: int):
@@ -34,6 +32,7 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
 
 def select_representative_cells(cell_files, y_dict):
     """
@@ -65,6 +64,7 @@ def select_representative_cells(cell_files, y_dict):
 
     return healthy, borderline, degraded
 
+
 def main(args):
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
@@ -78,9 +78,7 @@ def main(args):
     parent = Path(args.data_parent)
     subs = [d for d in parent.iterdir() if d.is_dir()]
     # keep only valid dataset roots (must have meta.json and cells/)
-    subs = [
-        d for d in subs if (d / "meta.json").exists() and (d / "cells").exists()
-    ]
+    subs = [d for d in subs if (d / "meta.json").exists() and (d / "cells").exists()]
     data_roots.extend(subs)
     meta = load_metas_check_channels(data_roots)
     channels = meta["channels"]
@@ -89,14 +87,14 @@ def main(args):
     all_cells = list_all_cells(data_roots)
 
     # --- split by cell (same logic as training) ---
-    train_cells, val_cells = stratified_cell_split(
-        all_cells,
-        val_split=args.val_split,
-        seed=args.seed,
-    )
+    # Fixed test split
+    cv_cells, test_cells = stratified_cell_split(all_cells, args.test_split, args.seed)
 
-    if len(val_cells) == 0:
-        raise RuntimeError("Validation set is empty.")
+    # CV folds on remaining cells
+    cv_folds = stratified_kfold_cells(cv_cells, args.n_folds, args.seed)
+
+    val_cells = cv_folds[args.fold_id]
+    # train_cells = [c for i, f in enumerate(cv_folds) if i != args.fold_id for c in f]
 
     # --- load checkpoint ---
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
@@ -111,7 +109,7 @@ def main(args):
         predict=tuple(predict),
         augment=False,
         soh_max=1.2,
-        soh_min=0.8
+        soh_min=0.8,
     )
 
     dl_val = DataLoader(
@@ -151,9 +149,7 @@ def main(args):
             true_soh.setdefault(cf, []).append(v)
 
     # --- select representative VALIDATION cells ---
-    healthy, borderline, degraded = select_representative_cells(
-        val_cells, true_soh
-    )
+    healthy, borderline, degraded = select_representative_cells(val_cells, true_soh)
 
     print("Selected validation cells:")
     print("  healthy   :", healthy)
@@ -165,7 +161,7 @@ def main(args):
         model,
         dl_val,
         device,
-        cell_files=[healthy, borderline, degraded],
+        cell_files=val_cells,  # [healthy, borderline, degraded],
         out_dir=out_dir,
         target="soh_avg",
         y_range=(0.8, 1.2),
@@ -173,6 +169,7 @@ def main(args):
     )
 
     print(f"Trajectory plots saved to {out_dir}")
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -195,13 +192,15 @@ if __name__ == "__main__":
         required=True,
         help="Output directory for trajectory plots",
     )
+    ap.add_argument("--n-folds", type=int, required=True)
+    ap.add_argument("--fold-id", type=int, required=True)
 
-    ap.add_argument("--val-split", type=float, default=0.2)
+    ap.add_argument("--test-split", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--batch-size", type=int, default=128)
+    ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--cpu", action="store_true")
 
     args = ap.parse_args()
-    
+
     main(args)

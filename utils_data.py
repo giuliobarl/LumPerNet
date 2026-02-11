@@ -47,7 +47,7 @@ def compute_channel_stats(cell_files: list[Path], sample_cap: int | None = None)
 
 
 # ----------------- Split logic -----------------
-def stratified_cell_split(cell_files: list[Path], val_split: float, seed: int):
+def stratified_cell_split(cell_files: list[Path], test_split: float, seed: int):
     """Splits by cell (never splits a cell's timepoints between train and val) and stratifies by stack_code."""
     rng = random.Random(seed)
     by_stack = {}
@@ -55,22 +55,43 @@ def stratified_cell_split(cell_files: list[Path], val_split: float, seed: int):
         dat = np.load(cf, allow_pickle=True)
         s = int(dat["stack_code"]) if "stack_code" in dat.files else 0
         by_stack.setdefault(s, []).append(cf)
-    train_cells, val_cells = [], []
+    train_cells, test_cells = [], []
     for s, files in by_stack.items():
         files = files[:]
         rng.shuffle(files)
         n_val = (
-            max(1, int(round(len(files) * val_split)))
+            max(1, int(round(len(files) * test_split)))
             if len(files) > 1
-            else (1 if val_split > 0 else 0)
+            else (1 if test_split > 0 else 0)
         )
-        val_cells.extend(files[:n_val])
+        test_cells.extend(files[:n_val])
         train_cells.extend(files[n_val:])
-    if len(train_cells) == 0 and len(val_cells) > 0:
-        train_cells.append(val_cells.pop())
+    if len(train_cells) == 0 and len(test_cells) > 0:
+        train_cells.append(test_cells.pop())
 
-    # print(f"Train cells: {train_cells}, Val cells: {val_cells}.")
-    return train_cells, val_cells
+    # print(f"Train cells: {train_cells}, Val cells: {test_cells}.")
+    return train_cells, test_cells
+
+
+def stratified_kfold_cells(cells, n_folds, seed):
+    rng = np.random.RandomState(seed)
+    cells = list(cells)
+
+    # group by stack_code
+    by_stack = {}
+    for c in cells:
+        sc = int(np.load(c, allow_pickle=True)["stack_code"])
+        by_stack.setdefault(sc, []).append(c)
+
+    folds = [[] for _ in range(n_folds)]
+
+    for sc_cells in by_stack.values():
+        rng.shuffle(sc_cells)
+        for i, c in enumerate(sc_cells):
+            folds[i % n_folds].append(c)
+
+    return folds
+
 
 # ----------------- Target stats -----------------
 def collect_true_targets(loader, targets):
@@ -91,6 +112,7 @@ def collect_true_targets(loader, targets):
         data[k] = np.concatenate(data[k]) if data[k] else None
 
     return data
+
 
 def summarize_targets(data):
     stats = {}
