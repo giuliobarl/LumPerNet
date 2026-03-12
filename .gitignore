@@ -183,12 +183,14 @@ models/
 # Videos folders
 videos*
 
-# temp notebooks and old codes
+# temp notebooks and old/future codes
 _old_codes/*
+_future_codes/*
 *temp*
 
 # files under development
-train_classifier.py
+*_classifier.py
 
 # outputs from tests
-runs/
+runs*/
+trained_models/*

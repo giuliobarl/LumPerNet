@@ -40,7 +40,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm import tqdm
 
 from dataset import PerovCellTimepoints, list_all_cells, load_metas_check_channels
-from models import SoHNet
+from models import LumPerNet
 from utils_data import (
     collect_true_targets,
     compute_channel_stats,
@@ -66,6 +66,101 @@ def set_seed(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
+# ----------------- Modality selection -----------------
+def _normalize_channel_name(s: str) -> str:
+    return s.strip().lower().replace(" ", "").replace("__", "_")
+
+
+def select_channel_indices(all_channels, modality: str):
+    """
+    all_channels: list[str] from meta["channels"] (in your dataset order).
+    modality options:
+      - "all"
+      - "el"
+      - "pl_oc"
+      - "pl_sc"
+      - "el+pl_oc"
+      - "el+pl_sc"
+      - "pl_oc+pl_sc"
+
+    Returns: keep_idx (list[int]), kept_channels (list[str])
+    """
+    m = _normalize_channel_name(modality)
+
+    if m in ("all", "full", "multimodal"):
+        keep_idx = list(range(len(all_channels)))
+        return keep_idx, [all_channels[i] for i in keep_idx]
+
+    # Normalize channel names for matching
+    ch_norm = [_normalize_channel_name(c) for c in all_channels]
+
+    def idx_where(pred):
+        return [i for i, c in enumerate(ch_norm) if pred(c)]
+
+    # If your channel names are exactly the ones you wrote, you can also do strict mapping:
+    strict_map = {
+        "el": ["EL_t", "EL_0", "rEL"],
+        "pl_oc": ["PLoc_t", "PLoc_0", "rPLoc"],
+        "pl_sc": ["PLsc_t", "PLsc_0", "rPLsc"],
+    }
+    if m in strict_map:
+        wanted = {_normalize_channel_name(x) for x in strict_map[m]}
+        keep_idx = [i for i, c in enumerate(ch_norm) if c in wanted]
+        if len(keep_idx) == 0:
+            raise ValueError(
+                f"Could not match modality '{modality}' using strict names. meta channels were: {all_channels}"
+            )
+        keep_idx = sorted(set(keep_idx))
+        return keep_idx, [all_channels[i] for i in keep_idx]
+
+    # Combinations
+    if m in ("el+pl_oc", "pl_oc+el"):
+        keep = sorted(
+            set(
+                select_channel_indices(all_channels, "el")[0]
+                + select_channel_indices(all_channels, "pl_oc")[0]
+            )
+        )
+        return keep, [all_channels[i] for i in keep]
+    if m in ("el+pl_sc", "pl_sc+el"):
+        keep = sorted(
+            set(
+                select_channel_indices(all_channels, "el")[0]
+                + select_channel_indices(all_channels, "pl_sc")[0]
+            )
+        )
+        return keep, [all_channels[i] for i in keep]
+    if m in ("pl_oc+pl_sc", "pl_sc+pl_oc"):
+        keep = sorted(
+            set(
+                select_channel_indices(all_channels, "pl_oc")[0]
+                + select_channel_indices(all_channels, "pl_sc")[0]
+            )
+        )
+        return keep, [all_channels[i] for i in keep]
+
+    raise ValueError(
+        f"Unknown --modality '{modality}'. "
+        f"Use one of: all, el, pl_oc, pl_sc, el+pl_oc, el+pl_sc, pl_oc+pl_sc."
+    )
+
+
+def filter_channel_stats(ch_stats: dict, keep_idx: list[int]):
+    """
+    ch_stats as produced by compute_channel_stats(train_cells).
+    Expected keys like 'mean' and 'std' arrays of shape [C].
+    """
+    out = {}
+    for k, v in ch_stats.items():
+        arr = np.asarray(v)
+        if arr.ndim == 1 and arr.shape[0] >= max(keep_idx) + 1:
+            out[k] = arr[keep_idx]
+        else:
+            # keep non-channel vectors/scalars untouched
+            out[k] = v
+    return out
+
+
 # ----------------- Dataset -----------------
 def build_datasets_and_loaders(args, fold_id: int):
     data_roots = [Path(p) for p in args.data_roots]
@@ -75,6 +170,14 @@ def build_datasets_and_loaders(args, fold_id: int):
 
     meta = load_metas_check_channels(data_roots)
     channels = meta["channels"]
+    keep_idx, kept_channels = select_channel_indices(channels, args.modality)
+    print(
+        f"Using modality='{args.modality}' -> keeping {len(keep_idx)}/{len(channels)} channels:"
+    )
+    print("  " + ", ".join(kept_channels))
+    channels = (
+        kept_channels  # overwrite: from here on, 'channels' means selected channels
+    )
 
     cells = list_all_cells(data_roots)
     if len(cells) == 0:
@@ -97,7 +200,8 @@ def build_datasets_and_loaders(args, fold_id: int):
     assert set(val_cells).isdisjoint(test_cells)
 
     # Channel stats on TRAIN only
-    ch_stats = compute_channel_stats(train_cells)
+    ch_stats_full = compute_channel_stats(train_cells)
+    ch_stats = filter_channel_stats(ch_stats_full, keep_idx)
 
     # Datasets
     ds_train = PerovCellTimepoints(
@@ -108,7 +212,13 @@ def build_datasets_and_loaders(args, fold_id: int):
         soh_max=args.soh_max,
         soh_min=args.soh_min,
         drop_t0=True,
+        keep_idx=keep_idx,
     )
+
+    sample = ds_train[0]["x"]
+    assert sample.shape[0] == len(keep_idx), (sample.shape, len(keep_idx))
+    assert np.asarray(ch_stats["mean"]).shape[0] == len(keep_idx)
+
     ds_val = PerovCellTimepoints(
         val_cells,
         channel_stats=ch_stats,
@@ -117,6 +227,7 @@ def build_datasets_and_loaders(args, fold_id: int):
         soh_max=args.soh_max,
         soh_min=args.soh_min,
         drop_t0=True,
+        keep_idx=keep_idx,
     )
     ds_test = PerovCellTimepoints(
         test_cells,
@@ -126,6 +237,7 @@ def build_datasets_and_loaders(args, fold_id: int):
         soh_max=args.soh_max,
         soh_min=args.soh_min,
         drop_t0=True,
+        keep_idx=keep_idx,
     )
 
     # Binning for WeightedRandomSampler
@@ -239,7 +351,7 @@ def build_datasets_and_loaders(args, fold_id: int):
         "test": collect_true_targets(loaders["test"], args.predict),
     }
 
-    return meta, channels, ch_stats, loaders, splits, target_stats
+    return meta, channels, keep_idx, ch_stats, loaders, splits, target_stats
 
 
 def serialize_cells(cells):
@@ -622,7 +734,7 @@ def train(args):
         fold_dir = out_dir / f"fold_{k}"
         fold_dir.mkdir(exist_ok=True)
 
-        meta, channels, ch_stats, loaders, splits, target_stats = (
+        meta, channels, keep_idx, ch_stats, loaders, splits, target_stats = (
             build_datasets_and_loaders(args, fold_id=k)
         )
 
@@ -646,7 +758,7 @@ def train(args):
                 )
         n_stacks = max(all_stacks) + 1 if len(all_stacks) > 0 else 1
 
-        model = SoHNet(
+        model = LumPerNet(
             n_stacks=n_stacks,
             in_ch=len(channels),
             predict=tuple(args.predict),
@@ -668,6 +780,9 @@ def train(args):
                 "meta": meta,
                 "channel_stats": ch_stats,
                 "predict": list(args.predict),
+                "modality": args.modality,
+                "channels_selected": channels,
+                "channels_keep_idx": keep_idx,
             },
             fold_dir / "model.pt",
         )
@@ -808,6 +923,15 @@ def main():
     ap.add_argument("--batch-size", type=int, default=128)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--wd", type=float, default=1e-4)
+    ap.add_argument(
+        "--modality",
+        type=str,
+        default="all",
+        help=(
+            "Which imaging modality to use for the spatial model. "
+            "Examples: all, el, pl_oc, pl_sc, el+pl_oc, el+pl_sc, pl_oc+pl_sc."
+        ),
+    )
     ap.add_argument("--use-stack", default=False, action="store_true")
     ap.add_argument("--drop-stack", dest="use-stack", action="store_false")
     # ap.add_argument("--val-split", type=float, default=0.2)

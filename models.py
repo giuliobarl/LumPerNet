@@ -50,11 +50,11 @@ class TabularBranch(nn.Module):
         return self.dropout(self.emb(stack_code))
 
 
-class SoHNet(nn.Module):
+class LumPerNet(nn.Module):
     """Main multi-task model, composed of TinyBackbone and TabularBranch."""
 
     def __init__(
-        self, n_stacks: int, in_ch=9, predict=("soh_avg",), use_stack: bool = True
+        self, n_stacks: int, in_ch=9, predict=("soh_avg",), use_stack: bool = False
     ):
         super().__init__()
         self.backbone = TinyBackbone(in_ch=in_ch, width=16)
@@ -145,7 +145,7 @@ class LargeTabularBranch(nn.Module):
         return self.mlp(torch.cat([e, c], dim=1))
 
 
-class LargeSoHNet(nn.Module):
+class LargeLumPerNet(nn.Module):
     """Main multi-task model, composed of LargeBackbone and LargeTabularBranch."""
 
     def __init__(self, n_stacks: int, in_ch=9, predict=("soh_avg",)):
@@ -217,7 +217,7 @@ class BaselineMLP(nn.Module):
             ft = self.tab(stack_code, cont_feats)  # [B, tab_dim]
             x = torch.cat([x_mean, ft], dim=1)
         else:
-            x = x_mean
+            x = torch.cat([x_mean], dim=1)
 
         out = self.head(x)
         return {k: out[:, i] for i, k in enumerate(self.predict)}

@@ -68,6 +68,7 @@ class PerovCellTimepoints(Dataset):
         soh_max: float | None = None,
         soh_min: float | None = None,
         drop_t0: bool = False,
+        keep_idx: list[int] | None = None,
     ):
         self.items = []
         self.cells = []
@@ -76,10 +77,12 @@ class PerovCellTimepoints(Dataset):
         self.channel_stats = channel_stats
         self.soh_max = soh_max
         self.soh_min = soh_min
+        self.keep_idx = keep_idx
 
         for ci, cf in enumerate(cell_files):
             # loop over all cell_files (each is a .npz)
             dat = np.load(cf, allow_pickle=True)
+            t_idx = dat["t_idx"] if "t_idx" in dat.files else None
             x = dat["x"].astype(np.float32)  # (T,C,H,W)
             T, C, H, W = x.shape
 
@@ -105,6 +108,7 @@ class PerovCellTimepoints(Dataset):
                     "targets": targets,
                     "stack_code": stack_code,
                     "cell_file": str(cf),
+                    "t_idx": t_idx,
                 }
             )
 
@@ -169,6 +173,9 @@ class PerovCellTimepoints(Dataset):
         cell = self.cells[ci]
         x = torch.from_numpy(cell["x"][ti])  # (C,H,W)
 
+        if self.keep_idx is not None:
+            x = x[self.keep_idx, :, :]
+
         # per-channel normalization
         if self.mean is not None and self.std is not None:
             x = (x - self.mean.squeeze(0)) / (self.std.squeeze(0) + 1e-6)
@@ -190,4 +197,5 @@ class PerovCellTimepoints(Dataset):
             "y": y_dict,
             "cell_file": cell["cell_file"],
             "t_local": ti,
+            "t_idx": cell["t_idx"][ti] if cell["t_idx"] is not None else ti,
         }

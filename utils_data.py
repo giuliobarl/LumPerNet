@@ -46,6 +46,31 @@ def compute_channel_stats(cell_files: list[Path], sample_cap: int | None = None)
     return {"mean": mean, "std": std}
 
 
+# ----------------- PCE0 stats -----------------
+def compute_pce0_stats(cell_files):
+    vals = []
+    for cf in cell_files:
+        d = np.load(cf, allow_pickle=True)
+        if "pce_avg" in d.files and len(d["pce_avg"]) > 0:
+            v = float(np.asarray(d["pce_avg"]).astype(np.float32)[0])
+        elif "pce0" in d.files:
+            v = float(np.asarray(d["pce0"]).astype(np.float32))
+        else:
+            continue
+        if np.isfinite(v):
+            vals.append(v)
+
+    if len(vals) == 0:
+        return {"mean": 0.0, "std": 1.0}
+
+    vals = np.asarray(vals, dtype=np.float32)
+    mean = float(vals.mean())
+    std = float(vals.std(ddof=0))
+    if std < 1e-8:
+        std = 1.0
+    return {"mean": mean, "std": std}
+
+
 # ----------------- Split logic -----------------
 def stratified_cell_split(cell_files: list[Path], test_split: float, seed: int):
     """Splits by cell (never splits a cell's timepoints between train and val) and stratifies by stack_code."""

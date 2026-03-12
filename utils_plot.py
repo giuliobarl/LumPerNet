@@ -5,6 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.colors import LinearSegmentedColormap
 
 
 # ----------------- Utils -----------------
@@ -119,148 +120,6 @@ def plot_target_histograms(
         plt.close(fig)
 
 
-# ----------------- Trajectories -----------------
-def collect_cell_timeseries(
-    model,
-    loader,
-    device,
-    target="soh_avg",
-):
-    """
-    Collects true and predicted target values per cell and per time index.
-
-    Returns:
-        dict[cell_file] -> {
-            "t": np.ndarray,
-            "y_true": np.ndarray,
-            "y_pred": np.ndarray,
-        }
-    """
-    model.eval()
-    data = defaultdict(lambda: {"t": [], "y_true": [], "y_pred": []})
-
-    with torch.no_grad():
-        for batch in loader:
-            x = batch["x"].to(device)
-            sc = batch["stack_code"].to(device).long()
-            t_local = batch["t_local"].cpu().numpy()
-            cell_files = batch["cell_file"]
-
-            y_true = batch["y"][target].to(device)
-            y_pred = model(x, sc)[target]
-
-            for i in range(len(cell_files)):
-                yt = y_true[i].item()
-                if not np.isfinite(yt):
-                    continue
-
-                cf = cell_files[i]
-                data[cf]["t"].append(t_local[i])
-                data[cf]["y_true"].append(yt)
-                data[cf]["y_pred"].append(y_pred[i].item())
-
-    # convert to sorted numpy arrays
-    out = {}
-    for cf, d in data.items():
-        t = np.array(d["t"])
-        idx = np.argsort(t)
-        out[cf] = {
-            "t": t[idx],
-            "y_true": np.array(d["y_true"])[idx],
-            "y_pred": np.array(d["y_pred"])[idx],
-        }
-
-    return out
-
-
-def plot_cell_trajectory(
-    cell_data,
-    cell_file,
-    out_path,
-    target="soh_avg",
-    y_range=(0.8, 1.2),
-):
-    """
-    Plots true vs predicted target trajectory for one cell.
-    """
-    # out_path.mkdir(parents=True, exist_ok=True)
-    d = cell_data[cell_file]
-
-    t = d["t"]
-    y_true = d["y_true"]
-    y_pred = d["y_pred"]
-
-    # restrict to validity window
-    m = (y_true >= y_range[0]) & (y_true <= y_range[1])
-    if m.sum() < 2:
-        print(f"[WARN] Not enough points in range for {cell_file}")
-        return
-
-    t = t[m]
-    y_true = y_true[m]
-    y_pred = y_pred[m]
-
-    fig, ax = plt.subplots(figsize=(5.5, 3.5), dpi=160)
-
-    ax.plot(t, y_true, "-o", label="True", lw=2, markersize=4, color="#388088")
-    ax.plot(t, y_pred, "--o", label="Predicted", lw=2, markersize=4, color="#c33033")
-
-    ax.set_xlabel("Time index")
-    ax.set_ylabel(target)
-    ax.set_title(f"{target} trajectory\n{cell_file}")
-    ax.set_ylim(*y_range)
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
-
-
-def plot_representative_cells(
-    model,
-    loader,
-    device,
-    cell_files,
-    out_dir,
-    target="soh_avg",
-    y_range=(0.8, 1.2),
-    prefix="trajectory",
-):
-    """
-    Plots trajectories for a list of cell_files.
-    """
-    cell_data = collect_cell_timeseries(
-        model,
-        loader,
-        device,
-        target=target,
-    )
-
-    for cf in cell_files:
-        cf_key = str(cf)
-
-        if cf_key not in cell_data:
-            print(f"[WARN] Cell {cf_key} not found in loader")
-            continue
-
-        break_char = "\\"
-        out_path = (
-            out_dir
-            / f"{prefix}_{target}_{cf_key.split(break_char)[-1].replace('.npz','')}.png"
-        )
-
-        print(out_path)
-
-        plot_cell_trajectory(
-            cell_data,
-            cell_file=cf_key,
-            out_path=out_path,
-            target=target,
-            y_range=y_range,
-        )
-
-
 def visualise_dataloader_soh(
     dl,
     out_dir: Path,
@@ -319,7 +178,7 @@ def visualise_dataloader_soh(
 
         ax.set_xlabel("Batch index")
         ax.set_ylabel("Samples per batch")
-        ax.set_title("SoH-bin composition per batch")
+        ax.set_title(r"$R_\mathrm{PCE}$-bin composition per batch")
         ax.legend(ncol=2, fontsize=9)
         plt.tight_layout()
         plt.savefig(out_path)
@@ -332,3 +191,212 @@ def visualise_dataloader_soh(
         #     )
 
     return batch_bin_counts, idxs_seen
+
+
+# ----------------- Trajectories -----------------
+def plot_ensemble_trajectory(cell_data, cell_file, out_path):
+    d = cell_data[cell_file]
+
+    t = d["t"]
+    y_true = d["y_true"]
+    y_mean = d["y_pred_mean"]
+    y_std = d["y_pred_std"]
+
+    fig, ax = plt.subplots(figsize=(5.5, 3.5), dpi=160)
+
+    # True trajectory
+    ax.plot(t, y_true, "-o", label="True", color="#f88088", linewidth=1.8)
+
+    # Ensemble mean
+    ax.plot(t, y_mean, "-o", label="Ensemble mean", color="#088088", linewidth=1.8)
+
+    # Uncertainty shading (mean ± std)
+    ax.fill_between(
+        t,
+        y_mean - y_std,
+        y_mean + y_std,
+        color="#088088",
+        alpha=0.2,
+        label="±1 std (across folds)",
+    )
+
+    ax.set_xlabel("Time index")
+    ax.set_ylabel(r"$R_\mathrm{PCE}$")
+    ax.set_ylim(0.8, 1.2)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def plot_multiple_ensemble_trajectories(
+    cell_data,
+    cell_files,
+    out_path,
+    y_range=(0.8, 1.2),
+):
+    """
+    Plot multiple ensemble trajectories in a single multi-panel figure.
+
+    Args:
+        cell_data: dict returned by collect_ensemble_timeseries
+        cell_files: list of 3 cell file paths (strings)
+        out_path: where to save figure
+    """
+
+    n = len(cell_files)
+    fig, axes = plt.subplots(1, n, figsize=(3.5 * n, 3.5), dpi=300, sharey=True)
+
+    panel_labels = ["(a)", "(b)", "(c)"]
+
+    if n == 1:
+        axes = [axes]
+
+    for i, (ax, cf) in enumerate(zip(axes, cell_files)):
+        d = cell_data[cf]
+
+        t = d["t"]
+        y_true = d["y_true"]
+        y_mean = d["y_pred_mean"]
+        y_std = d["y_pred_std"]
+
+        # True
+        ax.plot(t, y_true, "-o", color="#f88088", linewidth=1.8, label="True")
+
+        # Mean
+        ax.plot(
+            t,
+            y_mean,
+            "-o",
+            color="#088088",
+            linewidth=1.8,
+            label="Ensemble mean",
+        )
+
+        # Shading
+        ax.fill_between(
+            t,
+            y_mean - y_std,
+            y_mean + y_std,
+            color="#088088",
+            alpha=0.2,
+        )
+
+        ax.text(
+            0.02,
+            0.96,
+            panel_labels[i],
+            transform=ax.transAxes,
+            fontsize=12,
+            fontweight="bold",
+            va="top",
+            ha="left",
+        )
+
+        # ax.set_title(Path(cf).stem)
+        ax.set_xlabel("Elapsed time (hours)")
+        ax.set_ylim(*y_range)
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel(r"$R_\mathrm{PCE}$")
+
+    # single legend
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=2)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    fig.savefig(out_path)
+    fig.savefig(str(out_path).replace("png", "pdf"))
+    plt.close(fig)
+
+
+def plot_absolute_error_vs_time(
+    t_hours,
+    abs_err,
+    out_path: Path,
+    gridsize: int = 35,
+    mincnt: int = 2,
+    ylabel: str = r"Absolute error $|\hat{y} - y|$",
+    inset_xlim=(0.0, 15.0),
+    inset_ylim=(0.0, 0.25),
+    inset_gridsize: int = 22,
+    inset_mincnt: int = 1,
+):
+    """
+    Hexbin plot of absolute error vs elapsed time, with an inset zoom for early time.
+    """
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+    t_hours = np.asarray(t_hours, dtype=float)
+    abs_err = np.asarray(abs_err, dtype=float)
+
+    m = np.isfinite(t_hours) & np.isfinite(abs_err) & (t_hours > 0)
+    t_hours = t_hours[m]
+    abs_err = abs_err[m]
+
+    if t_hours.size == 0:
+        print("[WARN] No finite values for error vs time plot.")
+        return
+
+    fig, ax = plt.subplots(figsize=(6.2, 4.2), dpi=180)
+    colors_hi_contrast = ["#004050", "#088088", "#38b8b0", "#f8c088", "#f88088"]
+    cmap_teal_salmon_hi = LinearSegmentedColormap.from_list(
+        "teal_salmon_hi", colors_hi_contrast, N=256
+    )
+
+    hb = ax.hexbin(
+        t_hours,
+        abs_err,
+        gridsize=gridsize,
+        cmap=cmap_teal_salmon_hi,
+        mincnt=mincnt,
+        # bins="log",
+    )
+    cb = fig.colorbar(hb, ax=ax)
+    cb.set_label("Count")
+
+    ax.set_xlabel("Elapsed time (hours)")
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.20)
+    ax.set_axisbelow(True)
+
+    # -----------------------------
+    # Inset: early-time zoom
+    # -----------------------------
+    axins = inset_axes(
+        ax,
+        width="42%",  # tweak if you want it larger/smaller
+        height="42%",
+        loc="upper right",
+        borderpad=1.0,
+    )
+
+    # restrict data to inset region for better binning
+    x0, x1 = inset_xlim
+    y0, y1 = inset_ylim
+    mi = (t_hours >= x0) & (t_hours <= x1) & (abs_err >= y0) & (abs_err <= y1)
+
+    axins.hexbin(
+        t_hours[mi],
+        abs_err[mi],
+        gridsize=inset_gridsize,
+        cmap=cmap_teal_salmon_hi,
+        mincnt=inset_mincnt,
+        # bins="log",
+    )
+
+    axins.set_xlim(x0, x1)
+    axins.set_ylim(y0, y1)
+    axins.grid(True, alpha=0.15)
+    axins.set_axisbelow(True)
+    axins.set_xticks([0, 5, 10, 15])
+    axins.set_yticks([0.0, 0.1, 0.2])
+
+    # draw a rectangle on the main plot showing inset region
+    ax.indicate_inset_zoom(axins, edgecolor="black", alpha=0.4, lw=0.8)
+
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
