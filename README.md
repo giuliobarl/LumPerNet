@@ -2,9 +2,9 @@
 
 This repository contains the code associated with the paper:
 
-**Quantifying Perovskite Solar Cell Degradation via Machine Learning from Spatially Resolved Multimodal Luminescence Time Series**
-Giulio Barletta, Simon Ternes, Saif Ali, Zohair Abbas, Chiara Ostendi, Marialucia D'Addio, Erica Magliano, Pietro Asinari, Eliodoro Chiavazzo, Aldo Di Carlo
-[arXiv](https://arxiv.org/abs/2603.12857)
+**Quantifying Perovskite Solar Cell Degradation via Machine Learning from Spatially Resolved Multimodal Luminescence Time Series**.
+Giulio Barletta, Simon Ternes, Saif Ali, Zohair Abbas, Chiara Ostendi, Marialucia D'Addio, Erica Magliano, Pietro Asinari, Eliodoro Chiavazzo, Aldo Di Carlo.
+[arXiv](https://arxiv.org/abs/2603.12857) 2026.
 
 LumPerNet is a deep-learning pipeline for predicting the degradation state of perovskite solar cells from **spatially resolved luminescence imaging** and associated **JV measurements**.
 
