@@ -21,8 +21,7 @@ def _ctx_from_output_dir(output_dir):
     <base>/<res_name>/<YYYY-MM-DD>/<EL or PL[_sc]/PL_oc>
     """
     p = Path(output_dir)
-    date_root = p.parent.name
-    return date_root
+    return p.parent
 
 
 def check_running(api, ch):
@@ -67,7 +66,7 @@ def _get_settings_json(api):
         return None
 
 
-def trigger_jv(api, ch, n_iter):
+def trigger_jv(api, ch, cycle_counter):
     api.set_active_channel(ch)
     time.sleep(0.1)
     data = _get_settings_json(api)
@@ -78,7 +77,7 @@ def trigger_jv(api, ch, n_iter):
     print(f"[Channel {ch}] Settings updated.")
     try:
         print(f"[Channel {ch}] Starting measurement")
-        if n_iter == 0:
+        if cycle_counter == 0:
             api.start_channel()
         else:
             api.force_jv_measurement()
@@ -204,25 +203,51 @@ def set_fixed_voltage(api, ch, voltage: float) -> bool:
     return True
 
 
+def _safe_lum_acquire(acquire_fn, label):
+    try:
+        result = acquire_fn()
+        if result is None:
+            print(f"[{label}] Spectrum skipped or failed.")
+        else:
+            print(f"[{label}] Spectrum acquired.")
+        return result
+    except Exception as e:
+        print(f"[{label}] Spectrum acquisition error: {e}")
+        return None
+
+
 # ==== WHITE LED (JV) ====
 def run_JV(
     api,
     num_channels,
     JV_time,
     t_recover,
-    n_iter,
     GPIO_PIN_WHITE,
     date_root,
     cycle_counter,
+    lum_api=None,
+    lum_files=None,
+    lum_enabled=False,
 ):
     GPIO.output(GPIO_PIN_WHITE, GPIO.HIGH)
 
     for _ in tqdm(range(20), desc="Recovering under white light soaking..."):
         time.sleep(1)
 
+    if lum_enabled and lum_api is not None and lum_files is not None:
+        _safe_lum_acquire(
+            lambda: lum_api.acquire_white_spectrum(
+                cycle=cycle_counter,
+                jsonl_path=lum_files["white_jsonl"],
+                summary_csv_path=lum_files["white_csv"],
+                ready_timeout_s=5.0,
+            ),
+            "WHITE SPEC",
+        )
+
     for ch in range(num_channels):
         if ch not in stopped_channels:
-            trigger_jv(api, ch, n_iter)
+            trigger_jv(api, ch, cycle_counter)
 
     for _ in tqdm(range(int(JV_time)), desc="White light soaking - JC sweep"):
         time.sleep(1)
@@ -267,6 +292,10 @@ def run_PL(
     acquire,
     USE_CAMERA,
     GPIO_PIN_BLUE,
+    cycle_counter,
+    lum_api=None,
+    lum_files=None,
+    lum_enabled=False,
 ):
     # Try OC on all active channels; if any fails → skip PL_oc image
     oc_ok_all = True
@@ -329,6 +358,17 @@ def run_PL(
             status="SKIPPED",
             reason="API update failed on at least one channel",
             stopped_channels=stopped_channels,
+        )
+
+    if lum_enabled and lum_api is not None and lum_files is not None and acquire:
+        _safe_lum_acquire(
+            lambda: lum_api.acquire_blue_spectrum(
+                cycle=cycle_counter,
+                jsonl_path=lum_files["blue_jsonl"],
+                summary_csv_path=lum_files["blue_csv"],
+                ready_timeout_s=5.0,
+            ),
+            "BLUE SPEC",
         )
 
     # Switch to SC on all; if any fails → skip PL_sc image
@@ -408,6 +448,10 @@ def run_EL(
     acquire,
     USE_CAMERA,
     el_voltage,
+    cycle_counter,
+    lum_api=None,
+    lum_files=None,
+    lum_enabled=False,
 ):
     # All channels must accept Fixed-Voltage update to acquire EL image
     fv_ok_all = True
@@ -464,6 +508,17 @@ def run_EL(
             status="SKIPPED",
             reason="API update failed on at least one channel",
             stopped_channels=stopped_channels,
+        )
+
+    if lum_enabled and lum_api is not None and lum_files is not None and acquire:
+        _safe_lum_acquire(
+            lambda: lum_api.acquire_dark_spectrum(
+                cycle=cycle_counter,
+                jsonl_path=lum_files["dark_jsonl"],
+                summary_csv_path=lum_files["dark_csv"],
+                ready_timeout_s=5.0,
+            ),
+            "DARK SPEC",
         )
 
     for ch in range(num_channels):

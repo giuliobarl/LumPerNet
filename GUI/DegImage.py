@@ -25,6 +25,7 @@ except ImportError:
 import faulthandler
 
 from arkeo_api import MeasurementAPI
+from arkeo_client import LuminescenceAPI, sample_lum_settings
 from camera import acquisition_PL
 from cycle_commands import run_EL, run_JV, run_PL
 
@@ -116,8 +117,12 @@ class App(customtkinter.CTk):
         self.cycle_counter = 0
         self.cycle_running = False
         self.run_thread = None
-        self.api = MeasurementAPI("192.168.0.250")
+
+        self.api = MeasurementAPI("192.168.0.250", 6340)
         self.ensure_api_connection()
+        self.lum_api = LuminescenceAPI("192.168.0.250", 6360, timeout=30.0, retries=1)
+        self.lum_enabled = False
+        self.lum_files = None
 
         self.GPIO_PIN_BLUE = 2
         self.GPIO_PIN_WHITE = 21
@@ -951,6 +956,25 @@ class App(customtkinter.CTk):
         if self.cycle_counter == 0:
             self.date_root = self._date_root()
             os.makedirs(self.date_root, exist_ok=True)
+
+            spec_dir = Path(self.date_root) / "spectra"
+            self.lum_files = self.lum_api.prepare_output_files(spec_dir)
+            self.ensure_lum_initialized()
+
+            if self.lum_enabled and self.lum_files is not None:
+                try:
+                    time.sleep(0.5)
+                    self.lum_api.acquire_dark_spectrum(
+                        cycle=-1,
+                        jsonl_path=self.lum_files["dark_jsonl"],
+                        summary_csv_path=self.lum_files["dark_csv"],
+                        ready_timeout_s=10.0,
+                    )
+                    _ = self.lum_api.acquire_single()  # warm-up, discard result
+                    print("Initial luminescence warm-up completed.")
+                except Exception as e:
+                    print(f"Initial luminescence dark failed: {e}")
+
             for channel_id in range(self.active_channels):
                 print(f"[Channel {channel_id}] Setting active channel")
                 self.api.set_active_channel(channel_id)
@@ -996,10 +1020,12 @@ class App(customtkinter.CTk):
                     self.active_channels,
                     self.JV_time,
                     self.t_recover,
-                    self.cycle_counter,
                     self.GPIO_PIN_WHITE,
                     self.date_root,
                     self.cycle_counter,
+                    lum_api=self.lum_api,
+                    lum_files=self.lum_files,
+                    lum_enabled=self.lum_enabled,
                 )
                 print(f"\n[{self.cycle_counter}] White LED OFF.")
 
@@ -1024,6 +1050,10 @@ class App(customtkinter.CTk):
                         acquire,
                         self.USE_CAMERA,
                         self.GPIO_PIN_BLUE,
+                        self.cycle_counter,
+                        lum_api=self.lum_api,
+                        lum_files=self.lum_files,
+                        lum_enabled=self.lum_enabled,
                     )
                 except Exception as e:
                     print(f"\n[{self.cycle_counter}]: {e}")
@@ -1049,6 +1079,10 @@ class App(customtkinter.CTk):
                         acquire,
                         self.USE_CAMERA,
                         self.EL_voltage,
+                        self.cycle_counter,
+                        lum_api=self.lum_api,
+                        lum_files=self.lum_files,
+                        lum_enabled=self.lum_enabled,
                     )
                 except Exception as e:
                     print(f"\n[{self.cycle_counter}]: {e}")
@@ -1092,17 +1126,28 @@ class App(customtkinter.CTk):
 
                 self.cycle_counter += 1
 
+            for ch in range(self.active_channels):
+                self.api.set_active_channel(ch)
+                self.api.stop_channel()
+
+            self.api.disconnect()
+
+            try:
+                if (
+                    getattr(self, "lum_api", None) is not None
+                    and self.lum_api.sock is not None
+                ):
+                    try:
+                        self.lum_api.close_routine()
+                    except Exception:
+                        pass
+                    self.lum_api.disconnect()
+            except Exception:
+                pass
+
             if self.cycle_counter < self.max_iter + 1:
-                for ch in range(self.active_channels):
-                    self.api.set_active_channel(ch)
-                    self.api.stop_channel()
-                self.api.disconnect()
                 self.update_gui(f"Cycle stopped at iteration {self.cycle_counter}")
             else:
-                for ch in range(self.active_channels):
-                    self.api.set_active_channel(ch)
-                    self.api.stop_channel()
-                self.api.disconnect()
                 self.update_gui(
                     f"Cycle stopped: reached max iterations ({self.max_iter}+1)."
                 )
@@ -1269,25 +1314,64 @@ class App(customtkinter.CTk):
 
     # Function to ensure workers stop
     def _on_close(self):
-        # ensure worker stops
+        # ask workers to stop
         self.cycle_running = False
-        if self.run_thread and self.run_thread.is_alive():
-            self.run_thread.join(timeout=3)
-        # switch off LEDs you use (fill the tuple)
+
+        # best-effort join for one-shot run thread
+        try:
+            if getattr(self, "run_thread", None) and self.run_thread.is_alive():
+                self.run_thread.join(timeout=1.0)
+        except Exception:
+            pass
+
+        # best-effort join for cycle thread too
+        try:
+            if getattr(self, "cycle_thread", None) and self.cycle_thread.is_alive():
+                self.cycle_thread.join(timeout=1.0)
+        except Exception:
+            pass
+
         gpio_safe_cleanup(pins_off=(self.GPIO_PIN_WHITE, self.GPIO_PIN_BLUE))
 
         try:
             self._hb_stop.set()
         except Exception:
             pass
+
         try:
-            os.remove(HEARTBEAT)  # optional; harmless if it fails
+            os.remove(HEARTBEAT)
         except Exception:
             pass
+
+        # IMPORTANT:
+        # only try CloseRoutine if a lum socket is already open.
+        # never trigger a new connection attempt during shutdown.
+        try:
+            if (
+                getattr(self, "lum_api", None) is not None
+                and self.lum_api.sock is not None
+            ):
+                try:
+                    self.lum_api.close_routine()
+                except Exception:
+                    pass
+                try:
+                    self.lum_api.disconnect()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # also disconnect the main Arkeo API if available
+        try:
+            if getattr(self, "api", None) is not None:
+                self.api.disconnect()
+        except Exception:
+            pass
+
         self.destroy()
 
-        # Functions to handle Arkeo API
-
+    # Functions to handle Arkeo API
     def ensure_api_connection(self):
         if not self.api.connection:
             try:
@@ -1295,6 +1379,52 @@ class App(customtkinter.CTk):
                 print("API connected successfully.")
             except Exception as e:
                 print(f"Failed to connect to API: {e}")
+
+    def ensure_lum_connection(self):
+        if not self.lum_api.sock:
+            try:
+                ok = self.lum_api.connect()
+                if ok:
+                    print("Luminescence API connected successfully.")
+                else:
+                    print("Luminescence API connection failed.")
+                return ok
+            except Exception as e:
+                print(f"Failed to connect to luminescence API: {e}")
+                return False
+        return True
+
+    def ensure_lum_initialized(self):
+        if not self.ensure_lum_connection():
+            self.lum_enabled = False
+            return False
+
+        try:
+            ok = self.lum_api.initialize_luminescence(
+                sample_lum_settings,
+                ready_timeout_s=30.0,
+            )
+
+            if not ok:
+                status = self.lum_api.get_status()
+                data = self.lum_api.get_data(status, {}) or {}
+                if (
+                    data.get("routine_name") == "Luminescence"
+                    and data.get("routine_status") == "Ready"
+                ):
+                    ok = True
+
+            self.lum_enabled = bool(ok)
+            if self.lum_enabled:
+                print("Luminescence routine initialized.")
+            else:
+                print("Luminescence routine not ready, continuing without spectra.")
+            return self.lum_enabled
+
+        except Exception as e:
+            print(f"Luminescence initialization failed: {e}")
+            self.lum_enabled = False
+            return False
 
 
 ################################ main ################################
