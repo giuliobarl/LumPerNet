@@ -293,18 +293,41 @@ def sort_row_major(centers, rows=None, cols=None, names_override=None):
     ]
 
 
+def enhance_for_display(
+    img: np.ndarray,
+    p_low: float = 1.0,
+    p_high: float = 99.5,
+    gamma: float = 0.8,
+) -> np.ndarray:
+    """
+    Display-only enhancement for interactive ROI picking.
+    Does not affect saved crops or downstream processing.
+    """
+    img = img.astype(np.float32)
+
+    lo, hi = np.percentile(img, [p_low, p_high])
+    if hi <= lo:
+        return np.zeros_like(img, dtype=np.float32)
+
+    disp = np.clip((img - lo) / (hi - lo), 0, 1)
+
+    # gamma < 1 brightens dark regions; gamma > 1 darkens
+    disp = np.power(disp, gamma)
+
+    return disp
+
+
 def interactive_pick_boxes(image_path: Path, n_rois: int = None, crop_size: int = 56):
-    """
-    Interactive ROI selection (two clicks per ROI: top-left, bottom-right).
-    Returns list of center points [(cx,cy), ...].
-    """
     matplotlib.use("TkAgg", force=True)
 
     img = load_image_gray(image_path)
     h, w = img.shape
 
+    # display-only enhanced image
+    img_disp = enhance_for_display(img, p_low=1.0, p_high=99.5, gamma=0.8)
+
     fig, ax = plt.subplots(figsize=(8, 8))
-    ax.imshow(img, cmap="gray")
+    ax.imshow(img_disp, cmap="gray", vmin=0, vmax=1)
     ax.set_title(
         "Click TOP-LEFT then BOTTOM-RIGHT for each ROI (close window when done)"
     )

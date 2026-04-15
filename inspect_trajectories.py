@@ -10,6 +10,7 @@ This script:
 
 import argparse
 import json
+import os
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -22,6 +23,8 @@ from dataset import PerovCellTimepoints, list_all_cells, load_metas_check_channe
 from models import LumPerNet
 from utils_data import stratified_cell_split
 from utils_plot import plot_absolute_error_vs_time, plot_multiple_ensemble_trajectories
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 
 # ----------------- Utils -----------------

@@ -200,7 +200,14 @@ def build_datasets_and_loaders(args, fold_id: int):
     assert set(val_cells).isdisjoint(test_cells)
 
     # Channel stats on TRAIN only
-    ch_stats_full = compute_channel_stats(train_cells)
+    # ch_stats_full = compute_channel_stats(train_cells)
+    ch_stats_full = compute_channel_stats(
+        train_cells,
+        channel_names=meta["channels"],
+        drop_t0=True,
+        soh_min=args.soh_min,
+        soh_max=args.soh_max,
+    )
     ch_stats = filter_channel_stats(ch_stats_full, keep_idx)
 
     # Datasets
@@ -784,10 +791,10 @@ def train(args):
                 "channels_selected": channels,
                 "channels_keep_idx": keep_idx,
             },
-            fold_dir / "model.pt",
+            fold_dir / f"model_{k}.pt",
         )
 
-        print(f"Done. Best model saved to {fold_dir/'model.pt'}")
+        print(f"Done. Best model saved to {fold_dir/f'model_{k}.pt'}")
 
         # Logs
         plot_loss_history(log_rows, fold_dir / "loss_history.png")

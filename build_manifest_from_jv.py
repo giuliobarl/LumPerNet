@@ -43,7 +43,7 @@ def find_data_marker(lines: list[str]) -> int | None:
 def parse_sample_and_channel_from_jv(jv_path: Path) -> tuple[str, str, str]:
     """
     JV filenames look like: ..._Stability (Parameters)_{STACK}_{BATCH}-{CHANNEL}.txt
-    Example: 0000_2025-10-13_11.55.43_Stability (Parameters)_Felix_new-1A.txt
+    Example: 0000_2025-10-13_11.55.43_Stability (Parameters)_batch_0-1A.txt
     Returns (stack_id, sample_id, channel_from_name). If pattern fails, returns ("", "", "").
     """
     stem = jv_path.stem
