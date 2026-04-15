@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-
 sample_lum_settings = {
     "integration_time": 100,
     "averages": 1,
@@ -43,7 +42,7 @@ class LuminescenceAPI:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             if sys.platform.startswith("linux"):
                 s.setsockopt(socket.IPPROTO_TCP, 0x10, 60)  # TCP_KEEPIDLE
-                s.setsockopt(socket.IPPROTO_TCP, 0x12, 5)   # TCP_KEEPCNT
+                s.setsockopt(socket.IPPROTO_TCP, 0x12, 5)  # TCP_KEEPCNT
                 s.setsockopt(socket.IPPROTO_TCP, 0x11, 10)  # TCP_KEEPINTVL
         except Exception:
             pass
@@ -113,7 +112,13 @@ class LuminescenceAPI:
                 return None
 
             return json.loads(body.decode("utf-8", errors="replace"))
-        except (TimeoutError, BrokenPipeError, ConnectionError, OSError, json.JSONDecodeError):
+        except (
+            TimeoutError,
+            BrokenPipeError,
+            ConnectionError,
+            OSError,
+            json.JSONDecodeError,
+        ):
             self.disconnect()
             return None
 
@@ -224,7 +229,7 @@ class LuminescenceAPI:
 
     # -------------------------------
     # High-level workflow helpers
-    # -------------------------------    
+    # -------------------------------
     def ensure_ready(self, timeout_s=30.0, poll_s=0.2):
         t0 = time.time()
         last_resp = None
@@ -258,12 +263,15 @@ class LuminescenceAPI:
 
         print("ensure_ready timeout, last status:", last_resp)
         return False
-    
+
     def initialize_luminescence(self, settings=None, ready_timeout_s=30.0):
         # 1. If Luminescence is already active and ready, use it
         status = self.get_status()
         data = self.get_data(status, {})
-        if data.get("routine_name") == "Luminescence" and data.get("routine_status") == "Ready":
+        if (
+            data.get("routine_name") == "Luminescence"
+            and data.get("routine_status") == "Ready"
+        ):
             if settings is not None:
                 resp = self.apply_settings(settings)
                 if not self.is_ok(resp):
@@ -281,7 +289,10 @@ class LuminescenceAPI:
                     if settings is not None:
                         resp = self.apply_settings(settings)
                         if not self.is_ok(resp):
-                            print("apply_settings failed after active-routine check:", resp)
+                            print(
+                                "apply_settings failed after active-routine check:",
+                                resp,
+                            )
                             return False
                     return True
 
@@ -294,7 +305,10 @@ class LuminescenceAPI:
         if not self.ensure_ready(timeout_s=ready_timeout_s):
             status = self.get_status()
             data = self.get_data(status, {}) or {}
-            if data.get("routine_name") == "Luminescence" and data.get("routine_status") == "Ready":
+            if (
+                data.get("routine_name") == "Luminescence"
+                and data.get("routine_status") == "Ready"
+            ):
                 return True
             print("ensure_ready failed after StartRoutine, last status:", status)
             return False
@@ -361,13 +375,17 @@ class LuminescenceAPI:
                 signal_raw = spectrum
 
         # Case 2: dark acquisition
-        if (wavelengths_raw is None or signal_raw is None) and _is_1d_numeric_list(wavelengths):
+        if (wavelengths_raw is None or signal_raw is None) and _is_1d_numeric_list(
+            wavelengths
+        ):
             if _looks_nonempty_signal(dark):
                 wavelengths_raw = wavelengths
                 signal_raw = dark
 
         # Case 3: reference acquisition
-        if (wavelengths_raw is None or signal_raw is None) and _is_1d_numeric_list(wavelengths):
+        if (wavelengths_raw is None or signal_raw is None) and _is_1d_numeric_list(
+            wavelengths
+        ):
             if _looks_nonempty_signal(reference):
                 wavelengths_raw = wavelengths
                 signal_raw = reference
@@ -440,25 +458,29 @@ class LuminescenceAPI:
         with open(str(filepath), "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow([
-                    "cycle",
-                    "modality",
-                    "status",
-                    "reason",
-                    "peak_wavelength_nm",
-                    "peak_signal",
-                    "integrated_signal",
-                ])
+                writer.writerow(
+                    [
+                        "cycle",
+                        "modality",
+                        "status",
+                        "reason",
+                        "peak_wavelength_nm",
+                        "peak_signal",
+                        "integrated_signal",
+                    ]
+                )
 
-            writer.writerow([
-                record.get("cycle"),
-                record.get("modality"),
-                record.get("status"),
-                record.get("reason"),
-                record.get("peak_wavelength_nm"),
-                record.get("peak_signal"),
-                record.get("integrated_signal"),
-            ])
+            writer.writerow(
+                [
+                    record.get("cycle"),
+                    record.get("modality"),
+                    record.get("status"),
+                    record.get("reason"),
+                    record.get("peak_wavelength_nm"),
+                    record.get("peak_signal"),
+                    record.get("integrated_signal"),
+                ]
+            )
 
     @staticmethod
     def save_spectrum_csv(data_dict, filepath):
@@ -587,7 +609,7 @@ class LuminescenceAPI:
         elif command_name == "AcquireReference":
             resp = self.acquire_reference()
         else:
-            raise ValueError("Unsupported command: {}".format(command_name))
+            raise ValueError(f"Unsupported command: {command_name}")
 
         if not self.is_ok(resp):
             summary = {
@@ -618,7 +640,7 @@ class LuminescenceAPI:
             self.append_jsonl_record(jsonl_path, summary)
             self.append_summary_csv(summary_csv_path, summary)
             return None
-        
+
         # print(type(data.get("wavelengths")), len(data.get("wavelengths", [])))
         # print(type(data.get("spectrum")), len(data.get("spectrum", [])))
         # print(data.get("wavelengths", [])[:5])
@@ -654,7 +676,9 @@ class LuminescenceAPI:
     # -------------------------------
     # DegImage-oriented aliases
     # -------------------------------
-    def acquire_white_spectrum(self, cycle, jsonl_path, summary_csv_path, ready_timeout_s=1.5):
+    def acquire_white_spectrum(
+        self, cycle, jsonl_path, summary_csv_path, ready_timeout_s=1.5
+    ):
         return self._acquire_and_append(
             command_name="AcquireSingle",
             modality="white",
@@ -664,7 +688,9 @@ class LuminescenceAPI:
             ready_timeout_s=ready_timeout_s,
         )
 
-    def acquire_blue_spectrum(self, cycle, jsonl_path, summary_csv_path, ready_timeout_s=1.5):
+    def acquire_blue_spectrum(
+        self, cycle, jsonl_path, summary_csv_path, ready_timeout_s=1.5
+    ):
         return self._acquire_and_append(
             command_name="AcquireSingle",
             modality="blue",
@@ -674,7 +700,9 @@ class LuminescenceAPI:
             ready_timeout_s=ready_timeout_s,
         )
 
-    def acquire_dark_spectrum(self, cycle, jsonl_path, summary_csv_path, ready_timeout_s=1.5):
+    def acquire_dark_spectrum(
+        self, cycle, jsonl_path, summary_csv_path, ready_timeout_s=1.5
+    ):
         return self._acquire_and_append(
             command_name="AcquireDark",
             modality="dark",
