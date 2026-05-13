@@ -320,7 +320,7 @@ def plot_absolute_error_vs_time(
     mincnt: int = 2,
     ylabel: str = r"Absolute error $|\hat{y} - y|$",
     inset_xlim=(0.0, 15.0),
-    inset_ylim=(0.0, 0.25),
+    inset_ylim=(0.0, 0.23),
     inset_gridsize: int = 22,
     inset_mincnt: int = 1,
 ):
@@ -352,7 +352,7 @@ def plot_absolute_error_vs_time(
         gridsize=gridsize,
         cmap=cmap_teal_salmon_hi,
         mincnt=mincnt,
-        # bins="log",
+        bins="log",
     )
     cb = fig.colorbar(hb, ax=ax)
     cb.set_label("Count")

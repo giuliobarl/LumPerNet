@@ -122,7 +122,7 @@ class PerovCellTimepoints(Dataset):
                     and "soh_avg" in targets
                 ):
                     v = targets["soh_avg"][ti]
-                    if np.isfinite(v) and v >= self.soh_max or v < self.soh_min:
+                    if np.isfinite(v) and (v >= self.soh_max or v < self.soh_min):
                         continue
                 self.items.append((ci, ti))
 
