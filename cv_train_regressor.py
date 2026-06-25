@@ -215,11 +215,12 @@ def build_datasets_and_loaders(args, fold_id: int):
         train_cells,
         channel_stats=ch_stats,
         predict=tuple(args.predict),
-        augment=not args.no_aug,
+        augment=(not args.no_aug and not args.homogenize_spatial),
         soh_max=args.soh_max,
         soh_min=args.soh_min,
         drop_t0=True,
         keep_idx=keep_idx,
+        homogenize_spatial=args.homogenize_spatial,
     )
 
     sample = ds_train[0]["x"]
@@ -235,6 +236,7 @@ def build_datasets_and_loaders(args, fold_id: int):
         soh_min=args.soh_min,
         drop_t0=True,
         keep_idx=keep_idx,
+        homogenize_spatial=args.homogenize_spatial,
     )
     ds_test = PerovCellTimepoints(
         test_cells,
@@ -245,6 +247,7 @@ def build_datasets_and_loaders(args, fold_id: int):
         soh_min=args.soh_min,
         drop_t0=True,
         keep_idx=keep_idx,
+        homogenize_spatial=args.homogenize_spatial,
     )
 
     # Binning for WeightedRandomSampler
@@ -400,6 +403,8 @@ def train_loop(model, loaders, args, device):
     wait = 0
     best_metrics_tr = None
     best_metrics_va = None
+    best_state = None
+    val_score_history = []
     log_rows = []
 
     dl_train = loaders["train"]
@@ -475,26 +480,62 @@ def train_loop(model, loaders, args, device):
         log_rows.append(row)
 
         primary = f"val_mae_{args.predict[0]}"
-        if row[primary] < best_val:
-            best_val = row[primary]
-            best_epoch = epoch
-            wait = 0
-            best_metrics_tr = overall_tr
-            best_metrics_va = overall_va
+        raw_val_score = row[primary]
 
-            best_state = copy.deepcopy(model.state_dict())
+        # Keep validation history for smoothed checkpoint selection.
+        val_score_history.append(raw_val_score)
+
+        smooth_k = max(1, int(args.val_smooth_k))
+        if len(val_score_history) >= smooth_k:
+            selection_score = float(np.mean(val_score_history[-smooth_k:]))
         else:
-            wait += 1
+            selection_score = raw_val_score
+
+        row[f"{primary}_selection"] = selection_score
+
+        eligible_for_best = epoch >= args.min_epochs_before_best
+
+        if eligible_for_best:
+            improved = selection_score < best_val - args.min_delta
+
+            if improved:
+                best_val = selection_score
+                best_epoch = epoch
+                wait = 0
+                best_metrics_tr = overall_tr
+                best_metrics_va = overall_va
+                best_state = copy.deepcopy(model.state_dict())
+            else:
+                wait += 1
+        else:
+            # Warm-up period: train and log, but do not select checkpoint or consume patience.
+            wait = 0
 
         val_str = " ".join([f"{k}:{overall_va['mae'][k]:.4f}" for k in args.predict])
+        best_str = f"{best_val:.4f}" if np.isfinite(best_val) else "NA"
         print(
-            f"[{epoch:03d}] loss {row['train_loss']:.4f} | val {val_str} | best {best_val:.4f} "
-            f"(epoch {best_epoch:03d})"
+            f"[{epoch:03d}] "
+            f"loss {row['train_loss']:.4f} | "
+            f"val {val_str} | "
+            f"select {selection_score:.4f} | "
+            f"best {best_str} (epoch {best_epoch:03d}) | "
+            f"wait {wait}/{args.patience}"
         )
 
         if wait >= args.patience:
             print(f"Early stopping at epoch {epoch}, best was {best_epoch}")
             break
+
+    if best_state is None:
+        print(
+            "WARNING: no best checkpoint was selected. "
+            "This can happen if epochs < min_epochs_before_best. "
+            "Using final model state as fallback."
+        )
+        best_state = copy.deepcopy(model.state_dict())
+        best_epoch = epoch
+        best_metrics_tr = overall_tr
+        best_metrics_va = overall_va
 
     return model, log_rows, best_epoch, best_metrics_tr, best_metrics_va, best_state
 
@@ -790,6 +831,12 @@ def train(args):
                 "modality": args.modality,
                 "channels_selected": channels,
                 "channels_keep_idx": keep_idx,
+                "homogenize_spatial": args.homogenize_spatial,
+                "model_variant": (
+                    "LumPerNet_spatially_homogenized"
+                    if args.homogenize_spatial
+                    else "LumPerNet_spatial"
+                ),
             },
             fold_dir / f"model_{k}.pt",
         )
@@ -861,6 +908,16 @@ def train(args):
         "soh_max": args.soh_max,
         "learning_rate": args.lr,
         "weight_decay": args.wd,
+        "patience": args.patience,
+        "min_epochs_before_best": args.min_epochs_before_best,
+        "val_smooth_k": args.val_smooth_k,
+        "min_delta": args.min_delta,
+        "homogenize_spatial": args.homogenize_spatial,
+        "model_variant": (
+            "LumPerNet_spatially_homogenized"
+            if args.homogenize_spatial
+            else "LumPerNet_spatial"
+        ),
         "use_stack": args.use_stack,
         "consistency_weight": args.consistency_weight,
         "consistency_log": args.consistency_log,
@@ -921,11 +978,11 @@ def main():
     ap.add_argument(
         "--n-folds",
         type=int,
-        default=1,
+        default=4,
         help="Number of CV folds. 1 = single split (default).",
     )
-    ap.add_argument("--soh-max", type=float, default=None)
-    ap.add_argument("--soh-min", type=float, default=None)
+    ap.add_argument("--soh-max", type=float, default=1.2)
+    ap.add_argument("--soh-min", type=float, default=0.8)
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
@@ -939,16 +996,47 @@ def main():
             "Examples: all, el, pl_oc, pl_sc, el+pl_oc, el+pl_sc, pl_oc+pl_sc."
         ),
     )
+    ap.add_argument(
+        "--homogenize-spatial",
+        action="store_true",
+        help=(
+            "Replace each channel map by its spatial average before feeding it to "
+            "LumPerNet. This keeps the same CNN architecture but removes spatial "
+            "information."
+        ),
+    )
     ap.add_argument("--use-stack", default=False, action="store_true")
     ap.add_argument("--drop-stack", dest="use-stack", action="store_false")
-    # ap.add_argument("--val-split", type=float, default=0.2)
     ap.add_argument("--test-split", type=float, default=0.2)
     ap.add_argument("--patience", type=int, default=50)
-    ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument(
+        "--min-epochs-before-best",
+        type=int,
+        default=15,
+        help=(
+            "Do not save/select a best checkpoint before this epoch. "
+            "Prevents selecting undertrained models from lucky early validation dips."
+        ),
+    )
+    ap.add_argument(
+        "--val-smooth-k",
+        type=int,
+        default=3,
+        help=(
+            "Rolling window size for smoothing the validation MAE used for checkpoint selection. "
+            "Use 1 to disable smoothing."
+        ),
+    )
+    ap.add_argument(
+        "--min-delta",
+        type=float,
+        default=1e-4,
+        help="Minimum improvement in smoothed validation MAE required to reset patience.",
+    )
+    ap.add_argument("--workers", type=int, default=0)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cpu", action="store_true")
     ap.add_argument("--no-aug", action="store_true")
-
     ap.add_argument("--consistency-weight", type=float, default=0.0)
     ap.add_argument("--consistency-log", action="store_true")
 
@@ -998,18 +1086,36 @@ if __name__ == "__main__":
 """
 example bash usage
 
-python train_regressor.py \
+python cv_train_regressor.py \
   --data-parent ./data/final \
-  --out-dir ./runs/soh_multitask \
-  --predict soh_avg voc_ret jsc_ret ff_ret \
+  --out-dir ./runs/lumpernet_spatial_all \
+  --predict soh_avg \
+  --modality all \
   --soh-min 0.8 \
   --soh-max 1.2 \
+  --n-folds 4 \
+  --test-split 0.2 \
   --epochs 100 \
-  --batch-size 64 \
+  --batch-size 32 \
+  --patience 50 \
   --lr 3e-4 \
-  --val-split 0.2 \
-  --test-split 0.1 \
-  --seed 42 \
-  --consistency-weight 0.5 \
-  --consistency-log
+  --wd 1e-4 \
+  --seed 42
+
+python cv_train_regressor.py \
+  --data-parent ./data/final \
+  --out-dir ./runs/lumpernet_homogenized_all \
+  --predict soh_avg \
+  --modality all \
+  --homogenize-spatial \
+  --soh-min 0.8 \
+  --soh-max 1.2 \
+  --n-folds 4 \
+  --test-split 0.2 \
+  --epochs 100 \
+  --batch-size 32 \
+  --patience 50 \
+  --lr 3e-4 \
+  --wd 1e-4 \
+  --seed 42
 """

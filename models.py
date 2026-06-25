@@ -20,8 +20,16 @@ def set_seed(seed: int):
 class TinyBackbone(nn.Module):
     """Simple CNN branch: shared spatial feature extractor for all tasks."""
 
-    def __init__(self, in_ch=9, width=16, dropout=0.2):
+    def __init__(self, in_ch=9, width=16, dropout=0.2, grid_size=1):
         super().__init__()
+
+        if grid_size < 1:
+            raise ValueError(f"grid_size must be >= 1, got {grid_size}")
+
+        self.grid_size = grid_size
+        self.width = width
+        pool_size = 1 if grid_size == 1 else (grid_size, grid_size)
+
         self.net = nn.Sequential(
             nn.Conv2d(in_ch, width, 3, padding=1),
             nn.ReLU(inplace=True),
@@ -31,9 +39,9 @@ class TinyBackbone(nn.Module):
             nn.ReLU(inplace=True),
             nn.Dropout2d(dropout),
             nn.MaxPool2d(2),
-            nn.AdaptiveAvgPool2d(1),
+            nn.AdaptiveAvgPool2d(pool_size),
         )
-        self.out_dim = 2 * width
+        self.out_dim = 2 * width * grid_size * grid_size
 
     def forward(self, x):
         return self.net(x).flatten(1)
@@ -54,12 +62,25 @@ class LumPerNet(nn.Module):
     """Main multi-task model, composed of TinyBackbone and TabularBranch."""
 
     def __init__(
-        self, n_stacks: int, in_ch=9, predict=("soh_avg",), use_stack: bool = False
+        self,
+        n_stacks: int,
+        in_ch: int = 9,
+        predict=("soh_avg",),
+        use_stack: bool = False,
+        width: int = 16,
+        backbone_dropout: float = 0.2,
+        head_dropout: float = 0.2,
+        grid_size: int = 1,
+        use_layernorm_head: bool | None = None,
     ):
         super().__init__()
-        self.backbone = TinyBackbone(in_ch=in_ch, width=16)
+
+        self.backbone = TinyBackbone(
+            in_ch=in_ch, width=width, dropout=backbone_dropout, grid_size=grid_size
+        )
 
         self.use_stack = use_stack
+
         if use_stack:
             self.tab = TabularBranch(n_stacks=n_stacks, d_emb=2)
             fusion_dim = self.backbone.out_dim + self.tab.out_dim
@@ -67,18 +88,55 @@ class LumPerNet(nn.Module):
             self.tab = None
             fusion_dim = self.backbone.out_dim
 
-        self.head = nn.Sequential(
-            nn.Linear(fusion_dim, 32),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(32, len(predict)),
+        # self.head = nn.Sequential(
+        #     nn.Linear(fusion_dim, 32),
+        #     nn.ReLU(inplace=True),
+        #     nn.Dropout(0.2),
+        #     nn.Linear(32, len(predict)),
+        # )
+
+        if grid_size == 1:
+            head_hidden = (32,)
+            use_layernorm_head = False
+        else:
+            head_hidden = (128, 32)
+            use_layernorm_head = True
+
+        self.head = self.make_head(
+            fusion_dim=fusion_dim,
+            n_out=len(predict),
+            hidden=head_hidden,
+            dropout=head_dropout,
+            use_layernorm=use_layernorm_head,
         )
+
         self.predict = predict
+
+    def make_head(
+        self, fusion_dim, n_out, hidden=(128, 32), dropout=0.2, use_layernorm=True
+    ):
+        layers = []
+
+        if use_layernorm:
+            layers.append(nn.LayerNorm(fusion_dim))
+
+        in_dim = fusion_dim
+
+        for h in hidden:
+            layers.append(nn.Linear(in_dim, h))
+            layers.append(nn.ReLU(inplace=True))
+            layers.append(nn.Dropout(dropout))
+            in_dim = h
+
+        layers.append(nn.Linear(in_dim, n_out))
+        return nn.Sequential(*layers)
 
     def forward(self, imgs, stack_code, cont_feats=None):
         fi = self.backbone(imgs)
 
         if self.use_stack:
+            if stack_code is None:
+                raise ValueError("stack_code cannot be None when use_stack is True")
             ft = self.tab(stack_code, cont_feats)
             x = torch.cat([fi, ft], dim=1)
         else:
@@ -167,7 +225,7 @@ class LargeLumPerNet(nn.Module):
         return {k: out[:, i] for i, k in enumerate(self.predict)}
 
 
-# ----------------- Baseline Model -----------------
+# ----------------- Baseline MLP Model -----------------
 class BaselineMLP(nn.Module):
     """
     Baseline regressor:

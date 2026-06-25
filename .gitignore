@@ -190,6 +190,7 @@ _future_codes/*
 
 # files under development
 *_classifier.py
+revision/*
 
 # outputs from tests
 runs*/

@@ -69,6 +69,7 @@ class PerovCellTimepoints(Dataset):
         soh_min: float | None = None,
         drop_t0: bool = False,
         keep_idx: list[int] | None = None,
+        homogenize_spatial: bool = False,
     ):
         self.items = []
         self.cells = []
@@ -78,6 +79,7 @@ class PerovCellTimepoints(Dataset):
         self.soh_max = soh_max
         self.soh_min = soh_min
         self.keep_idx = keep_idx
+        self.homogenize_spatial = homogenize_spatial
 
         for ci, cf in enumerate(cell_files):
             # loop over all cell_files (each is a .npz)
@@ -175,6 +177,9 @@ class PerovCellTimepoints(Dataset):
 
         if self.keep_idx is not None:
             x = x[self.keep_idx, :, :]
+
+        if self.homogenize_spatial:
+            x = x.mean(dim=(1, 2), keepdim=True).expand_as(x)
 
         # per-channel normalization
         if self.mean is not None and self.std is not None:
